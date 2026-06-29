@@ -1,19 +1,24 @@
 """
-Main FastAPI app. Wires stages 1-5 into a single /search endpoint.
-Merges Gemini's extraction with arXiv's own metadata (authors/year)
-before returning, since that metadata is more reliable from the source.
+Main FastAPI app. /search runs the full pipeline; /tech-match is a
+separate, optional, on-demand call.
 """
 import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from app.models.schemas import SearchResponse, PaperResult
+from app.models.schemas import (
+    SearchResponse,
+    PaperResult,
+    TechMatchRequest,
+    TechMatchResponse,
+)
 from app.services.arxiv_service import search_arxiv
 from app.services.rerank_service import rerank_papers
 from app.services.pdf_service import get_paper_texts
 from app.services.extraction_service import extract_papers
 from app.services.graph_service import build_knowledge_graph
+from app.services.techmatch_service import match_tech_stack
 
 load_dotenv()
 
@@ -49,7 +54,6 @@ async def search(query: str):
     extracted = extract_papers(top_papers, texts)
     graph = build_knowledge_graph(extracted)
 
-    # Merge Gemini's extraction with arXiv's own metadata, keyed by arxiv_id
     candidates_by_id = {p.arxiv_id: p for p in top_papers}
     results = []
     for e in extracted:
@@ -64,15 +68,31 @@ async def search(query: str):
                 problem=e.problem,
                 method=e.method,
                 dataset=e.dataset,
+                eval_method=e.eval_method,
                 results=e.results,
                 contribution=e.contribution,
+                limitations=e.limitations,
+                prerequisites=e.prerequisites,
+                real_world_impact=e.real_world_impact,
                 precision=e.precision,
                 recall=e.recall,
                 f1_score=e.f1_score,
                 accuracy=e.accuracy,
                 auc=e.auc,
+                bleu=e.bleu,
+                rouge=e.rouge,
                 other_metrics=e.other_metrics,
             )
         )
 
     return SearchResponse(query=query, papers=results, graph=graph)
+
+
+@app.post("/tech-match", response_model=TechMatchResponse)
+def tech_match(payload: TechMatchRequest):
+    if not payload.tech_stack:
+        raise HTTPException(status_code=400, detail="tech_stack must not be empty")
+    papers_dicts = [p.dict() for p in payload.papers]
+    result = match_tech_stack(papers_dicts, payload.tech_stack)
+    return TechMatchResponse(**result)
+    

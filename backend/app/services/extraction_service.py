@@ -1,9 +1,8 @@
 """
 Stage 4: Structured extraction via Gemini 3.1 Flash-Lite.
-
-Still ONE batched call for all papers (not one call per paper) to protect
-the free-tier rate limit. Now also extracts benchmark metrics where the
-paper explicitly reports them.
+Still ONE batched call for all papers - now extracting a richer set of
+fields (limitations, prerequisites, real-world impact, BLEU/ROUGE, eval
+method) on top of the original problem/method/results/contribution.
 """
 import os
 import json
@@ -20,39 +19,48 @@ MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 EXTRACTION_PROMPT = """You are extracting structured information from machine learning research papers.
 
 You will be given {count} papers, each with an arxiv_id and its text. For EACH paper, extract:
+
 - problem: what problem the paper addresses (1-2 sentences)
 - method: the core technical approach (1-2 sentences)
-- dataset: what data/benchmarks were used (short, or "not specified")
-- results: key quantitative or qualitative findings (1-2 sentences)
-- contribution: what's novel vs prior work (1-2 sentences)
-- precision: the paper's reported precision score, EXACTLY as stated (e.g. "92.3%"). If not explicitly reported, use "Not reported". Never estimate.
-- recall: same rule as precision, for recall.
-- f1_score: same rule, for F1 score.
-- accuracy: same rule, for accuracy.
-- auc: same rule, for AUC/AUROC.
-- other_metrics: any other reported metrics (BLEU, ROUGE, exact match, etc.) as a short string, or "Not reported".
+- dataset: dataset name(s) and size if stated (e.g. "SQuAD, ~100k QA pairs"), or "Not specified"
+- eval_method: how the paper evaluates its approach - one of "zero-shot", "few-shot", "fine-tuned", "cross-validation", or a short description if none fit. Use "Not specified" if unclear.
+- results: 1-2 sentence narrative summary of the key findings
+- contribution: what is novel versus prior work (1-2 sentences)
+- limitations: key weaknesses, either explicitly stated by the authors OR reasonably inferred from the paper's scope and method (1-2 sentences). Always fill this in - if nothing is evident, say "Not explicitly discussed."
+- prerequisites: background knowledge or dependencies a reader needs to understand this paper. Use "None specified" if the paper is self-contained.
+- real_world_impact: ONE short sentence on the practical, real-world significance of this paper.
+
+Benchmark metrics - extract ONLY if the paper's text explicitly states the number. NEVER estimate or guess. Use the literal string "Not reported" if absent:
+- precision
+- recall
+- f1_score
+- accuracy
+- auc
+- bleu
+- rouge
+- other_metrics: any other reported metric not covered above, as a short string, or "Not reported"
 
 Respond ONLY with a JSON array, no markdown fences, no preamble. Each element must have exactly these keys:
-arxiv_id, title, problem, method, dataset, results, contribution, precision, recall, f1_score, accuracy, auc, other_metrics
+arxiv_id, title, problem, method, dataset, eval_method, results, contribution, limitations, prerequisites, real_world_impact, precision, recall, f1_score, accuracy, auc, bleu, rouge, other_metrics
 
 PAPERS:
 {papers_block}
 """
 
 
-def _build_papers_block(papers: list[PaperCandidate], texts: dict[str, str]) -> str:
+def _build_papers_block(papers, texts):
     blocks = []
     for p in papers:
         text = texts.get(p.arxiv_id, p.abstract)
         truncated = text[:8000]
         blocks.append(
-            f"---\narxiv_id: {p.arxiv_id}\ntitle: {p.title}\ntext:\n{truncated}\n"
+            "---\narxiv_id: " + p.arxiv_id + "\ntitle: " + p.title + "\ntext:\n" + truncated + "\n"
         )
     return "\n".join(blocks)
 
 
 @retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=2, min=2, max=30))
-def _call_gemini(prompt: str) -> str:
+def _call_gemini(prompt):
     model = genai.GenerativeModel(MODEL_NAME)
     response = model.generate_content(
         prompt,
@@ -61,31 +69,11 @@ def _call_gemini(prompt: str) -> str:
     return response.text
 
 
-def extract_papers(
-    papers: list[PaperCandidate], texts: dict[str, str]
-) -> list[ExtractedPaper]:
+def extract_papers(papers, texts):
     prompt = EXTRACTION_PROMPT.format(
         count=len(papers), papers_block=_build_papers_block(papers, texts)
     )
     raw = _call_gemini(prompt)
     data = json.loads(raw)
     return [ExtractedPaper(**item) for item in data]
-
-
-if __name__ == "__main__":
-    import asyncio
-    from app.services.arxiv_service import search_arxiv
-    from app.services.rerank_service import rerank_papers
-    from app.services.pdf_service import get_paper_texts
-
-    async def main():
-        query = "retrieval-augmented generation"
-        candidates = search_arxiv(query, max_results=20)
-        top = rerank_papers(query, candidates, top_k=5)
-        texts = await get_paper_texts(top)
-        extracted = extract_papers(top, texts)
-        for e in extracted:
-            print(f"\n{e.title}\n  F1: {e.f1_score}  Accuracy: {e.accuracy}")
-
-    asyncio.run(main())
     

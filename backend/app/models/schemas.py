@@ -2,18 +2,17 @@
 Pydantic models shared across the pipeline.
 """
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Dict
 
 
 class PaperCandidate(BaseModel):
-    """A paper as it comes back from arXiv, before reranking."""
     arxiv_id: str
     title: str
     abstract: str
     authors: List[str]
     published: str
     pdf_url: str
-    score: Optional[float] = None
+    score: float = None
 
 
 class ExtractedPaper(BaseModel):
@@ -23,25 +22,24 @@ class ExtractedPaper(BaseModel):
     problem: str
     method: str
     dataset: str
+    eval_method: str = "Not specified"
     results: str
     contribution: str
-    # Benchmark metrics - "Not reported" if the paper's text doesn't state them.
-    # Never guessed/estimated by the model; only pulled when explicitly present.
+    limitations: str = "Not specified"
+    prerequisites: str = "None specified"
+    real_world_impact: str = ""
     precision: str = "Not reported"
     recall: str = "Not reported"
     f1_score: str = "Not reported"
     accuracy: str = "Not reported"
     auc: str = "Not reported"
+    bleu: str = "Not reported"
+    rouge: str = "Not reported"
     other_metrics: str = "Not reported"
 
 
 class PaperResult(BaseModel):
-    """
-    Final per-paper shape returned to the frontend: Gemini's extraction
-    merged with arXiv's own metadata (authors/year/pdf link), since the
-    metadata is more reliable coming straight from arXiv than re-asking
-    the LLM to recall it.
-    """
+    """Gemini's extraction merged with arXiv's own metadata."""
     arxiv_id: str
     title: str
     authors: List[str]
@@ -50,13 +48,19 @@ class PaperResult(BaseModel):
     problem: str
     method: str
     dataset: str
+    eval_method: str = "Not specified"
     results: str
     contribution: str
+    limitations: str = "Not specified"
+    prerequisites: str = "None specified"
+    real_world_impact: str = ""
     precision: str = "Not reported"
     recall: str = "Not reported"
     f1_score: str = "Not reported"
     accuracy: str = "Not reported"
     auc: str = "Not reported"
+    bleu: str = "Not reported"
+    rouge: str = "Not reported"
     other_metrics: str = "Not reported"
 
 
@@ -83,4 +87,28 @@ class SearchResponse(BaseModel):
     query: str
     papers: List[PaperResult]
     graph: KnowledgeGraph
+
+
+# --- Tech Stack Match (on-demand, separate from the main pipeline) ---
+
+class TechMatchPaperInput(BaseModel):
+    arxiv_id: str
+    title: str
+    method: str = ""
+    contribution: str = ""
+
+
+class TechMatchRequest(BaseModel):
+    tech_stack: List[str]
+    papers: List[TechMatchPaperInput]
+
+
+class TechMatchItem(BaseModel):
+    tech: str
+    level: str  # "high" | "moderate" | "low"
+    explanation: str
+
+
+class TechMatchResponse(BaseModel):
+    matches: Dict[str, List[TechMatchItem]]
     

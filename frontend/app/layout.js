@@ -1,6 +1,7 @@
 import { Fraunces, Inter, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { ResearchProvider } from "../context/ResearchContext";
+import { UserProfileProvider } from "../context/UserProfileContext";
 import Navbar from "../components/Navbar";
 
 const fraunces = Fraunces({
@@ -26,19 +27,18 @@ export const metadata = {
 };
 
 export default function RootLayout({ children }) {
-  const fontVars =
-    fraunces.variable + " " + inter.variable + " " + plexMono.variable;
+  const fontVars = fraunces.variable + " " + inter.variable + " " + plexMono.variable;
 
   return (
     <html lang="en" className={fontVars}>
       <body>
-        <ResearchProvider>
-          <Navbar />
-          {children}
-        </ResearchProvider>
+        <UserProfileProvider>
+          <ResearchProvider>
+            <Navbar />
+            {children}
+          </ResearchProvider>
+        </UserProfileProvider>
       </body>
     </html>
   );
 }
-
-   
