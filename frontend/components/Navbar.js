@@ -9,11 +9,13 @@ const LINKS = [
   { href: "/search", label: "Search", needsData: false },
   { href: "/results", label: "Results", needsData: true },
   { href: "/graph", label: "Graph", needsData: true },
+  { href: "/history", label: "History", needsData: false },
+  { href: "/settings", label: "Settings", needsData: false },
 ];
 
 export default function Navbar() {
   const pathname = usePathname();
-  const { data } = useResearch();
+  const research = useResearch();
 
   return (
     <nav className="sticky top-0 z-50 border-b border-[var(--border)] bg-[var(--bg)]/90 backdrop-blur">
@@ -21,17 +23,14 @@ export default function Navbar() {
         <Link href="/" className="font-[var(--font-display)] text-lg tracking-tight">
           Research<span className="text-[var(--accent)]">Copilot</span>
         </Link>
-        <div className="flex items-center gap-6 text-sm">
+        <div className="flex items-center gap-5 text-sm">
           {LINKS.map(function (link) {
-            const disabled = link.needsData && !data;
+            const disabled = link.needsData && !research.data;
             const active = pathname === link.href;
 
             if (disabled) {
               return (
-                <span
-                  key={link.href}
-                  className="text-[var(--text-muted)] opacity-40 cursor-not-allowed"
-                >
+                <span key={link.href} className="text-[var(--text-muted)] opacity-40 cursor-not-allowed">
                   {link.label}
                 </span>
               );

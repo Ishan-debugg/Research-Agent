@@ -11,10 +11,25 @@
   --accent-soft: rgba(201, 162, 75, 0.12);
   --good: #5fae7a;
   --bad: #c75450;
+  --warn: #d6b53d;
 
   --font-display: 'Fraunces', serif;
   --font-body: 'Inter', sans-serif;
   --font-mono: 'IBM Plex Mono', monospace;
+}
+
+[data-theme="light"] {
+  --bg: #faf9f6;
+  --surface: #ffffff;
+  --surface-2: #f0eee8;
+  --border: #e0ddd4;
+  --text: #1a1a1a;
+  --text-muted: #6b6960;
+  --accent: #a8823a;
+  --accent-soft: rgba(168, 130, 58, 0.12);
+  --good: #2f7d4f;
+  --bad: #b13d39;
+  --warn: #97791f;
 }
 
 html {

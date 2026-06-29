@@ -1,11 +1,7 @@
-export default function PaperCard({ paper }) {
-  const fields = [
-    ["Problem", paper.problem],
-    ["Method", paper.method],
-    ["Key Results", paper.results],
-    ["Why It Matters", paper.contribution],
-  ];
+import PerformanceInsights from "./PerformanceInsights";
+import TechMatchBadges from "./TechMatchBadges";
 
+export default function PaperCard({ paper, techMatchItems, techStackSet, techMatchLoading }) {
   let authorLine = "";
   if (paper.authors && paper.authors.length > 0) {
     authorLine = paper.authors.slice(0, 3).join(", ");
@@ -32,23 +28,33 @@ export default function PaperCard({ paper }) {
         </a>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {fields.map(function (pair) {
-          const label = pair[0];
-          const value = pair[1];
-          return (
-            <div key={label}>
-              <div className="text-xs font-[var(--font-mono)] uppercase tracking-wide text-[var(--accent)] mb-1">
-                {label}
-              </div>
-              <p className="text-sm text-[var(--text-muted)] leading-relaxed">
-                {value}
-              </p>
-            </div>
-          );
-        })}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+        <div>
+          <div className="text-xs font-[var(--font-mono)] uppercase tracking-wide text-[var(--accent)] mb-1">Problem</div>
+          <p className="text-sm text-[var(--text-muted)] leading-relaxed">{paper.problem}</p>
+        </div>
+        <div>
+          <div className="text-xs font-[var(--font-mono)] uppercase tracking-wide text-[var(--accent)] mb-1">Method</div>
+          <p className="text-sm text-[var(--text-muted)] leading-relaxed">{paper.method}</p>
+        </div>
+      </div>
+
+      <div className="mb-5 px-4 py-3 rounded-md bg-[var(--accent-soft)] border border-[var(--accent)]">
+        <div className="text-xs font-[var(--font-mono)] uppercase tracking-wide text-[var(--accent)] mb-1">
+          Why This Matters
+        </div>
+        <p className="text-sm text-[var(--text)]">{paper.real_world_impact}</p>
+      </div>
+
+      <div className="mb-5">
+        <h4 className="text-sm font-medium mb-4">Key Performance & Insights</h4>
+        <PerformanceInsights paper={paper} />
+      </div>
+
+      <div>
+        <h4 className="text-sm font-medium mb-3">Tech Stack Match</h4>
+        <TechMatchBadges items={techMatchItems} techStackSet={techStackSet} loading={techMatchLoading} />
       </div>
     </article>
   );
 }
-    

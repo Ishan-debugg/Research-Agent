@@ -95,4 +95,3 @@ def tech_match(payload: TechMatchRequest):
     papers_dicts = [p.dict() for p in payload.papers]
     result = match_tech_stack(papers_dicts, payload.tech_stack)
     return TechMatchResponse(**result)
-    

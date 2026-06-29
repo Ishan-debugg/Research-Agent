@@ -9,7 +9,7 @@ export default function Hero() {
         [ arXiv-native research engine ]
       </p>
       <h1 className="font-[var(--font-display)] text-4xl md:text-6xl leading-[1.1] max-w-3xl">
-        Read the literature without reading every paper.
+        Accelerate Research Intelligence.
       </h1>
       <p className="text-[var(--text-muted)] text-lg mt-6 max-w-xl leading-relaxed">
         Research Copilot retrieves, reranks, and synthesizes machine learning

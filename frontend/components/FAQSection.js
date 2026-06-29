@@ -21,7 +21,7 @@ export default function FAQSection() {
   return (
     <section className="max-w-3xl mx-auto px-6 py-20">
       <h2 className="font-[var(--font-display)] text-2xl mb-8">
-        Questions, answered
+        FAQs
       </h2>
       <div className="divide-y divide-[var(--border)]">
         {FAQS.map(function (item) {
