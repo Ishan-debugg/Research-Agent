@@ -46,6 +46,7 @@ def _call_gemini(prompt: str) -> str:
     response = model.generate_content(
         prompt,
         generation_config={"response_mime_type": "application/json"},
+        request_options={"timeout": 60},
     )
     return response.text
 

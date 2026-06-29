@@ -3,12 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useResearch } from "../../context/ResearchContext";
+import PipelinePreviewWindow from "../../components/PipelinePreviewWindow";
 
 const STEPS = [
-  { label: "Retrieve relevant papers", seconds: 4 },
-  { label: "Semantic rerank", seconds: 4 },
-  { label: "Extract text from PDFs", seconds: 18 },
-  { label: "Synthesize answer", seconds: 9 },
+  { label: "Retrieve relevant papers", seconds: 3 },
+  { label: "Semantic rerank", seconds: 3 },
+  { label: "Extract text from PDFs", seconds: 20 },
+  { label: "Synthesize answer", seconds: 25 },
 ];
 
 const TOTAL_SECONDS = STEPS.reduce(function (sum, s) {
@@ -59,6 +60,7 @@ export default function ProcessingPage() {
 
   const remaining = Math.max(0, Math.round(TOTAL_SECONDS - elapsed));
   const overEstimate = elapsed > TOTAL_SECONDS;
+  const edgeCount = research.data ? research.data.graph.edges.length : null;
 
   if (research.status === "error") {
     return (
@@ -66,12 +68,8 @@ export default function ProcessingPage() {
         <p className="font-[var(--font-mono)] text-xs uppercase tracking-widest text-[var(--bad)] mb-4">
           [ pipeline failed ]
         </p>
-        <h1 className="font-[var(--font-display)] text-2xl mb-3">
-          Something went wrong
-        </h1>
-        <p className="text-sm text-[var(--text-muted)] max-w-md mb-8">
-          {research.error}
-        </p>
+        <h1 className="font-[var(--font-display)] text-2xl mb-3">Something went wrong</h1>
+        <p className="text-sm text-[var(--text-muted)] max-w-md mb-8">{research.error}</p>
         <button
           onClick={function () {
             router.push("/search");
@@ -85,13 +83,13 @@ export default function ProcessingPage() {
   }
 
   return (
-    <main className="min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center px-6">
+    <main className="min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center px-6 py-12">
+      <PipelinePreviewWindow query={research.query} edgeCount={edgeCount} />
+
       <p className="font-[var(--font-mono)] text-xs uppercase tracking-widest text-[var(--accent)] mb-2">
         {'[ mapping "' + research.query + '" ]'}
       </p>
-      <h1 className="font-[var(--font-display)] text-2xl md:text-3xl mb-12">
-        Reading the literature
-      </h1>
+      <h1 className="font-[var(--font-display)] text-2xl md:text-3xl mb-12">Reading the literature</h1>
 
       <ol className="w-full max-w-md space-y-5">
         {STEPS.map(function (step, i) {
@@ -100,15 +98,13 @@ export default function ProcessingPage() {
           let circleClass =
             "font-[var(--font-mono)] text-xs w-7 h-7 rounded-full flex items-center justify-center border ";
           if (done) {
-            circleClass +=
-              "border-[var(--accent)] bg-[var(--accent)] text-[var(--bg)]";
+            circleClass += "border-[var(--accent)] bg-[var(--accent)] text-[var(--bg)]";
           } else if (active) {
             circleClass += "border-[var(--accent)] text-[var(--accent)] animate-pulse";
           } else {
             circleClass += "border-[var(--border)] text-[var(--text-muted)]";
           }
-          const labelClass =
-            done || active ? "text-[var(--text)]" : "text-[var(--text-muted)]";
+          const labelClass = done || active ? "text-[var(--text)]" : "text-[var(--text-muted)]";
 
           return (
             <li key={step.label} className="flex items-center gap-4">
@@ -119,11 +115,11 @@ export default function ProcessingPage() {
         })}
       </ol>
 
-      <p className="font-[var(--font-mono)] text-xs text-[var(--text-muted)] mt-12">
+      <p className="font-[var(--font-mono)] text-xs text-[var(--text-muted)] mt-12 text-center max-w-sm">
         {research.status === "done"
           ? "Done, opening results..."
           : overEstimate
-          ? "Still working - " + Math.round(elapsed) + "s elapsed"
+          ? "Still working - large language model calls occasionally take longer than expected"
           : "Estimated time remaining: ~" + remaining + "s"}
       </p>
     </main>

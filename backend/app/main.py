@@ -1,8 +1,12 @@
 """
 Main FastAPI app. /search runs the full pipeline; /tech-match is a
 separate, optional, on-demand call.
+
+Stage timings are printed to the console (uvicorn terminal) so you can
+see exactly where time is going on a slow request.
 """
 import os
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -35,6 +39,21 @@ ARXIV_CANDIDATE_COUNT = int(os.environ.get("ARXIV_CANDIDATE_COUNT", 20))
 TOP_K_PAPERS = int(os.environ.get("TOP_K_PAPERS", 5))
 
 
+def _relevance_scores(top_papers):
+    scores = [p.score for p in top_papers if p.score is not None]
+    if not scores:
+        return {p.arxiv_id: 90 for p in top_papers}
+    min_s, max_s = min(scores), max(scores)
+    span = max_s - min_s if max_s != min_s else 1
+    result = {}
+    for p in top_papers:
+        if p.score is None:
+            result[p.arxiv_id] = 90
+        else:
+            result[p.arxiv_id] = round(80 + 20 * (p.score - min_s) / span)
+    return result
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -45,16 +64,33 @@ async def search(query: str):
     if not query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty")
 
+    t0 = time.perf_counter()
     candidates = search_arxiv(query, max_results=ARXIV_CANDIDATE_COUNT)
+    print("[stage 1: retrieve]   %.1fs  (%d papers)" % (time.perf_counter() - t0, len(candidates)))
     if not candidates:
         raise HTTPException(status_code=404, detail="No papers found for this query")
 
+    t1 = time.perf_counter()
     top_papers = rerank_papers(query, candidates, top_k=TOP_K_PAPERS)
+    print("[stage 2: rerank]     %.1fs" % (time.perf_counter() - t1))
+
+    t2 = time.perf_counter()
     texts = await get_paper_texts(top_papers)
+    print("[stage 3: pdf+parse]  %.1fs" % (time.perf_counter() - t2))
+
+    t3 = time.perf_counter()
     extracted = extract_papers(top_papers, texts)
+    print("[stage 4: extract]    %.1fs" % (time.perf_counter() - t3))
+
+    t4 = time.perf_counter()
     graph = build_knowledge_graph(extracted)
+    print("[stage 5: synthesize] %.1fs" % (time.perf_counter() - t4))
+
+    print("[TOTAL]               %.1fs" % (time.perf_counter() - t0))
 
     candidates_by_id = {p.arxiv_id: p for p in top_papers}
+    relevance = _relevance_scores(top_papers)
+
     results = []
     for e in extracted:
         cand = candidates_by_id.get(e.arxiv_id)
@@ -65,6 +101,7 @@ async def search(query: str):
                 authors=cand.authors if cand else [],
                 year=cand.published[:4] if cand else "",
                 pdf_url=cand.pdf_url if cand else "",
+                relevance_score=relevance.get(e.arxiv_id, 90),
                 problem=e.problem,
                 method=e.method,
                 dataset=e.dataset,
@@ -74,6 +111,7 @@ async def search(query: str):
                 limitations=e.limitations,
                 prerequisites=e.prerequisites,
                 real_world_impact=e.real_world_impact,
+                audience=e.audience,
                 precision=e.precision,
                 recall=e.recall,
                 f1_score=e.f1_score,
@@ -82,8 +120,11 @@ async def search(query: str):
                 bleu=e.bleu,
                 rouge=e.rouge,
                 other_metrics=e.other_metrics,
+                baseline=e.baseline,
             )
         )
+
+    results.sort(key=lambda r: r.relevance_score, reverse=True)
 
     return SearchResponse(query=query, papers=results, graph=graph)
 

@@ -16,7 +16,6 @@ class PaperCandidate(BaseModel):
 
 
 class ExtractedPaper(BaseModel):
-    """Structured fields pulled out of a paper's full text by Gemini."""
     arxiv_id: str
     title: str
     problem: str
@@ -28,6 +27,7 @@ class ExtractedPaper(BaseModel):
     limitations: str = "Not specified"
     prerequisites: str = "None specified"
     real_world_impact: str = ""
+    audience: str = "General ML researchers"
     precision: str = "Not reported"
     recall: str = "Not reported"
     f1_score: str = "Not reported"
@@ -36,15 +36,16 @@ class ExtractedPaper(BaseModel):
     bleu: str = "Not reported"
     rouge: str = "Not reported"
     other_metrics: str = "Not reported"
+    baseline: str = "Not reported"
 
 
 class PaperResult(BaseModel):
-    """Gemini's extraction merged with arXiv's own metadata."""
     arxiv_id: str
     title: str
     authors: List[str]
     year: str
     pdf_url: str
+    relevance_score: int = 0
     problem: str
     method: str
     dataset: str
@@ -54,6 +55,7 @@ class PaperResult(BaseModel):
     limitations: str = "Not specified"
     prerequisites: str = "None specified"
     real_world_impact: str = ""
+    audience: str = "General ML researchers"
     precision: str = "Not reported"
     recall: str = "Not reported"
     f1_score: str = "Not reported"
@@ -62,6 +64,7 @@ class PaperResult(BaseModel):
     bleu: str = "Not reported"
     rouge: str = "Not reported"
     other_metrics: str = "Not reported"
+    baseline: str = "Not reported"
 
 
 class GraphNode(BaseModel):
@@ -89,8 +92,6 @@ class SearchResponse(BaseModel):
     graph: KnowledgeGraph
 
 
-# --- Tech Stack Match (on-demand, separate from the main pipeline) ---
-
 class TechMatchPaperInput(BaseModel):
     arxiv_id: str
     title: str
@@ -105,10 +106,9 @@ class TechMatchRequest(BaseModel):
 
 class TechMatchItem(BaseModel):
     tech: str
-    level: str  # "high" | "moderate" | "low"
+    level: str
     explanation: str
 
 
 class TechMatchResponse(BaseModel):
     matches: Dict[str, List[TechMatchItem]]
-    

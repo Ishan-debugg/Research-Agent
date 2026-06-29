@@ -1,15 +1,14 @@
 """
 Stage 4: Structured extraction via Gemini 3.1 Flash-Lite.
-Still ONE batched call for all papers - now extracting a richer set of
-fields (limitations, prerequisites, real-world impact, BLEU/ROUGE, eval
-method) on top of the original problem/method/results/contribution.
+One batched call for all papers. Now also extracts audience and
+baseline comparison alongside the existing fields.
 """
 import os
 import json
 import google.generativeai as genai
 from tenacity import retry, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
-from app.models.schemas import ExtractedPaper, PaperCandidate
+from app.models.schemas import ExtractedPaper
 
 load_dotenv()
 
@@ -23,14 +22,15 @@ You will be given {count} papers, each with an arxiv_id and its text. For EACH p
 - problem: what problem the paper addresses (1-2 sentences)
 - method: the core technical approach (1-2 sentences)
 - dataset: dataset name(s) and size if stated (e.g. "SQuAD, ~100k QA pairs"), or "Not specified"
-- eval_method: how the paper evaluates its approach - one of "zero-shot", "few-shot", "fine-tuned", "cross-validation", or a short description if none fit. Use "Not specified" if unclear.
+- eval_method: how the paper evaluates its approach - "zero-shot", "few-shot", "fine-tuned", "cross-validation", or a short description. Use "Not specified" if unclear.
 - results: 1-2 sentence narrative summary of the key findings
 - contribution: what is novel versus prior work (1-2 sentences)
-- limitations: key weaknesses, either explicitly stated by the authors OR reasonably inferred from the paper's scope and method (1-2 sentences). Always fill this in - if nothing is evident, say "Not explicitly discussed."
-- prerequisites: background knowledge or dependencies a reader needs to understand this paper. Use "None specified" if the paper is self-contained.
+- limitations: key weaknesses, stated or reasonably inferred (1-2 sentences). Always fill in - use "Not explicitly discussed" if nothing is evident.
+- prerequisites: background knowledge or dependencies needed to understand the paper. Use "None specified" if self-contained.
 - real_world_impact: ONE short sentence on the practical, real-world significance of this paper.
+- audience: who this paper is primarily written for, as one short phrase (e.g. "NLP researchers building production RAG systems").
 
-Benchmark metrics - extract ONLY if the paper's text explicitly states the number. NEVER estimate or guess. Use the literal string "Not reported" if absent:
+Benchmark metrics - extract ONLY if the paper's text explicitly states the number. NEVER estimate. Use "Not reported" if absent:
 - precision
 - recall
 - f1_score
@@ -38,10 +38,11 @@ Benchmark metrics - extract ONLY if the paper's text explicitly states the numbe
 - auc
 - bleu
 - rouge
-- other_metrics: any other reported metric not covered above, as a short string, or "Not reported"
+- other_metrics: any other reported metric not covered above, or "Not reported"
+- baseline: the name of the baseline model/method the headline result was compared against (e.g. "BM25 keyword search"), or "Not reported"
 
 Respond ONLY with a JSON array, no markdown fences, no preamble. Each element must have exactly these keys:
-arxiv_id, title, problem, method, dataset, eval_method, results, contribution, limitations, prerequisites, real_world_impact, precision, recall, f1_score, accuracy, auc, bleu, rouge, other_metrics
+arxiv_id, title, problem, method, dataset, eval_method, results, contribution, limitations, prerequisites, real_world_impact, audience, precision, recall, f1_score, accuracy, auc, bleu, rouge, other_metrics, baseline
 
 PAPERS:
 {papers_block}
@@ -65,6 +66,7 @@ def _call_gemini(prompt):
     response = model.generate_content(
         prompt,
         generation_config={"response_mime_type": "application/json"},
+        request_options={"timeout": 60},
     )
     return response.text
 
@@ -76,4 +78,3 @@ def extract_papers(papers, texts):
     raw = _call_gemini(prompt)
     data = json.loads(raw)
     return [ExtractedPaper(**item) for item in data]
-    

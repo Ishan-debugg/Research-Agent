@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useResearch } from "../../context/ResearchContext";
 import { useUserProfile } from "../../context/UserProfileContext";
-import PaperCard from "../../components/PaperCard";
+import BenchmarkExtracted from "../../components/BenchmarkExtracted";
+import PapersExplorer from "../../components/PapersExplorer";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -82,7 +83,7 @@ export default function ResultsPage() {
       </blockquote>
 
       {data.graph.open_problems && data.graph.open_problems.length > 0 && (
-        <div className="mb-16">
+        <div className="mb-14">
           <h2 className="text-sm font-medium uppercase tracking-wide text-[var(--text-muted)] mb-3">Open problems</h2>
           <div className="flex flex-wrap gap-2">
             {data.graph.open_problems.map(function (p) {
@@ -96,21 +97,18 @@ export default function ResultsPage() {
         </div>
       )}
 
-      <h2 className="font-[var(--font-display)] text-xl mb-6">Papers</h2>
-      <div className="space-y-5 mb-16">
-        {data.papers.map(function (paper) {
-          const items = techMatches ? techMatches[paper.arxiv_id] : null;
-          return (
-            <PaperCard
-              key={paper.arxiv_id}
-              paper={paper}
-              techMatchItems={items}
-              techStackSet={techStackSet}
-              techMatchLoading={techMatchLoading}
-            />
-          );
-        })}
+      <h2 className="font-[var(--font-display)] text-xl mb-6">Benchmark Extracted</h2>
+      <div className="mb-14">
+        <BenchmarkExtracted papers={data.papers} />
       </div>
+
+      <h2 className="font-[var(--font-display)] text-xl mb-6">Papers</h2>
+      <PapersExplorer
+        papers={data.papers}
+        techMatches={techMatches}
+        techStackSet={techStackSet}
+        techMatchLoading={techMatchLoading}
+      />
 
       <div className="mt-16 text-center">
         <Link
