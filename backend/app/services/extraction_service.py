@@ -53,7 +53,10 @@ def _build_papers_block(papers, texts):
     blocks = []
     for p in papers:
         text = texts.get(p.arxiv_id, p.abstract)
-        truncated = text[:4000]
+        # Skip first ~1500 chars (abstract+intro have no numbers).
+        # Send chars 1500-10000 where methods + results tables live.
+        full = text
+        truncated = full[1500:10000] if len(full) > 1500 else full[:8000]
         blocks.append(
             "---\narxiv_id: " + p.arxiv_id + "\ntitle: " + p.title + "\ntext:\n" + truncated + "\n"
         )

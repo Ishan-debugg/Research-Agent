@@ -24,7 +24,7 @@ async def _download_pdf(client: httpx.AsyncClient, url: str) -> bytes | None:
         return None
 
 
-def _extract_text(pdf_bytes: bytes, max_pages: int = 6) -> str:
+def _extract_text(pdf_bytes: bytes, max_pages: int = 10) -> str:
     """
     Extract text from the first N pages only - intro, method, and most
     results sections live early in arXiv papers, and this keeps token
