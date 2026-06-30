@@ -25,8 +25,11 @@ export default function SearchPage() {
     router.push("/processing");
   }
 
+  /* ── Improvement: auto-submit on chip click ── */
   function handleExample(topic) {
     setQuery(topic);
+    research.startSearch(topic);
+    router.push("/processing");
   }
 
   return (
@@ -58,7 +61,10 @@ export default function SearchPage() {
         </button>
       </form>
 
-      <div className="flex flex-wrap justify-center gap-2 mt-8 max-w-xl">
+      <p className="font-[var(--font-mono)] text-xs text-[var(--text-muted)] mt-8 mb-3 uppercase tracking-widest">
+        — or try one of these —
+      </p>
+      <div className="flex flex-wrap justify-center gap-2 max-w-xl">
         {EXAMPLES.map(function (topic) {
           return (
             <button
@@ -68,7 +74,7 @@ export default function SearchPage() {
               }}
               className="text-xs px-3 py-1.5 rounded-full border border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
             >
-              {topic}
+              {topic} ↗
             </button>
           );
         })}
