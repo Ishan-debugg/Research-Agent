@@ -63,7 +63,7 @@ export default function GraphView({ graph, onNodeClick }) {
         fitView
         proOptions={{ hideAttribution: true }}
       >
-        <Background color="#1c1c22" gap={20} />
+        <Background variant="dots" color="#c9a24b" gap={22} size={1.2} style={{ opacity: 0.35 }} />
         <Controls />
       </ReactFlow>
     </div>

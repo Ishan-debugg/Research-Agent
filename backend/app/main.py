@@ -7,6 +7,7 @@ see exactly where time is going on a slow request.
 """
 import os
 import time
+from functools import lru_cache
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -35,8 +36,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ARXIV_CANDIDATE_COUNT = int(os.environ.get("ARXIV_CANDIDATE_COUNT", 20))
+ARXIV_CANDIDATE_COUNT = int(os.environ.get("ARXIV_CANDIDATE_COUNT", 10))
 TOP_K_PAPERS = int(os.environ.get("TOP_K_PAPERS", 5))
+
+# ---------------------------------------------------------------------------
+# Simple in-memory result cache — repeated queries are served instantly
+# without re-running the full pipeline (LRU, keeps last 64 unique queries).
+# ---------------------------------------------------------------------------
+_result_cache: dict[str, dict] = {}
+_MAX_CACHE = 64
+_cache_order: list[str] = []
+
+
+def _cache_get(key: str):
+    return _result_cache.get(key)
+
+
+def _cache_set(key: str, value: dict):
+    if key in _result_cache:
+        _cache_order.remove(key)
+    _result_cache[key] = value
+    _cache_order.append(key)
+    if len(_cache_order) > _MAX_CACHE:
+        oldest = _cache_order.pop(0)
+        _result_cache.pop(oldest, None)
 
 
 def _relevance_scores(top_papers):
@@ -60,9 +83,15 @@ def health():
 
 
 @app.get("/search", response_model=SearchResponse)
-async def search(query: str):
+async def search(query: str):  # noqa: C901
     if not query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty")
+
+    cache_key = query.strip().lower()
+    cached = _cache_get(cache_key)
+    if cached:
+        print("[cache hit]  serving '%s' from cache" % query)
+        return SearchResponse(**cached)
 
     t0 = time.perf_counter()
     candidates = search_arxiv(query, max_results=ARXIV_CANDIDATE_COUNT)
@@ -126,7 +155,9 @@ async def search(query: str):
 
     results.sort(key=lambda r: r.relevance_score, reverse=True)
 
-    return SearchResponse(query=query, papers=results, graph=graph)
+    response = SearchResponse(query=query, papers=results, graph=graph)
+    _cache_set(cache_key, response.dict())
+    return response
 
 
 @app.post("/tech-match", response_model=TechMatchResponse)

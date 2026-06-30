@@ -1,9 +1,15 @@
+"use client";
+
 import Image from "next/image";
 import Link from "next/link";
+import { useUserProfile } from "../context/UserProfileContext";
 
 const BADGES = ["arXiv", "Gemini 3.1 Flash-Lite", "Cross-Encoder Reranking", "PyMuPDF"];
 
 export default function Hero() {
+  const { theme } = useUserProfile();
+  const isLight = theme === "light";
+
   return (
     <section className="max-w-6xl mx-auto px-6 pt-24 pb-16">
       <div className="flex flex-col md:flex-row items-center gap-10">
@@ -41,17 +47,30 @@ export default function Hero() {
           </div>
         </div>
 
-        {/* Right: illustration */}
+        {/* Right: theme-aware illustration */}
         <div className="shrink-0 hidden md:block">
-          <Image
-            src="/RAG.png"
-            alt="AI Research Engine illustration"
-            width={540}
-            height={440}
-            priority
-            className="object-contain drop-shadow-2xl"
-            style={{ mixBlendMode: "lighten" }}
-          />
+          {isLight ? (
+            <Image
+              key="light-hero"
+              src="/RAG2.png"
+              alt="AI Research Engine illustration"
+              width={540}
+              height={440}
+              priority
+              className="object-contain drop-shadow-2xl"
+            />
+          ) : (
+            <Image
+              key="dark-hero"
+              src="/RAG.png"
+              alt="AI Research Engine illustration"
+              width={540}
+              height={440}
+              priority
+              className="object-contain drop-shadow-2xl"
+              style={{ mixBlendMode: "lighten" }}
+            />
+          )}
         </div>
       </div>
     </section>

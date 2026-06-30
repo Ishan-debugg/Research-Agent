@@ -17,14 +17,14 @@ MIN_VALID_TEXT_LENGTH = 500  # below this, treat extraction as failed
 
 async def _download_pdf(client: httpx.AsyncClient, url: str) -> bytes | None:
     try:
-        resp = await client.get(url, timeout=30.0, follow_redirects=True)
+        resp = await client.get(url, timeout=15.0, follow_redirects=True)
         resp.raise_for_status()
         return resp.content
     except Exception:
         return None
 
 
-def _extract_text(pdf_bytes: bytes, max_pages: int = 12) -> str:
+def _extract_text(pdf_bytes: bytes, max_pages: int = 6) -> str:
     """
     Extract text from the first N pages only - intro, method, and most
     results sections live early in arXiv papers, and this keeps token

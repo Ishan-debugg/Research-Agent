@@ -6,16 +6,11 @@ function slugify(text) {
     .replace(/(^-|-$)/g, "");
 }
 
-export default function PipelinePreviewWindow({ query, edgeCount }) {
+export default function PipelinePreviewWindow({ query }) {
   const stats = [
     { label: "RETRIEVED", value: "20", caption: "papers - arXiv API" },
     { label: "RERANKED", value: "5", caption: "top - cross-encoder" },
     { label: "EXTRACT", value: "5", caption: "PDFs - full text parsed" },
-    {
-      label: "SYNTHESIZE",
-      value: edgeCount === null || edgeCount === undefined ? "-" : String(edgeCount),
-      caption: "relationships found",
-    },
   ];
 
   const breadcrumb = "copilot / research / " + (query ? slugify(query) : "insights");
@@ -31,7 +26,7 @@ export default function PipelinePreviewWindow({ query, edgeCount }) {
             {breadcrumb}
           </span>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-[var(--border)]">
+        <div className="grid grid-cols-3 gap-px bg-[var(--border)]">
           {stats.map(function (s) {
             return (
               <div key={s.label} className="bg-[var(--surface)] p-6">

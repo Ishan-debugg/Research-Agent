@@ -19,14 +19,31 @@ export default function PaperDetail({ paper, techMatchItems, techStackSet, techM
           <h3 className="font-[var(--font-display)] text-lg leading-snug">{paper.title}</h3>
           <p className="text-xs text-[var(--text-muted)] mt-1">{authorLine}</p>
         </div>
-        <a
-          href={paper.pdf_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="shrink-0 text-xs px-3 py-1.5 rounded-full border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] font-medium hover:opacity-80 transition-opacity"
-        >
-          View on arXiv
-        </a>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* PDF viewer */}
+          <a
+            href={paper.pdf_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs px-3 py-1.5 rounded-full border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] font-medium hover:opacity-80 transition-opacity"
+          >
+            View on arXiv
+          </a>
+          {/* Abstract page link */}
+          <a
+            href={"https://arxiv.org/abs/" + paper.arxiv_id}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open arXiv abstract page"
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
+          >
+            Link
+            <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2 10L10 2" />
+              <path d="M4 2h6v6" />
+            </svg>
+          </a>
+        </div>
       </div>
 
       <ProblemMethodGrid paper={paper} />

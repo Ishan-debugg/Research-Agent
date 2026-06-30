@@ -53,7 +53,7 @@ def _build_papers_block(papers, texts):
     blocks = []
     for p in papers:
         text = texts.get(p.arxiv_id, p.abstract)
-        truncated = text[:8000]
+        truncated = text[:4000]
         blocks.append(
             "---\narxiv_id: " + p.arxiv_id + "\ntitle: " + p.title + "\ntext:\n" + truncated + "\n"
         )

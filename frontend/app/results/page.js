@@ -72,7 +72,7 @@ export default function ResultsPage() {
   const techStackSet = profile.techStack && profile.techStack.length > 0;
 
   return (
-    <main className="max-w-4xl mx-auto px-6 py-16">
+    <main className="max-w-7xl mx-auto px-6 py-16">
       <p className="font-[var(--font-mono)] text-xs uppercase tracking-widest text-[var(--accent)] mb-3">
         [ research landscape ]
       </p>
@@ -102,7 +102,8 @@ export default function ResultsPage() {
         <BenchmarkExtracted papers={data.papers} />
       </div>
 
-      <h2 className="font-[var(--font-display)] text-xl mb-6">Papers</h2>
+      <h2 className="font-[var(--font-display)] text-xl mb-1">Papers</h2>
+      <p className="font-[var(--font-mono)] text-xs text-[var(--text-muted)] mb-6 uppercase tracking-widest">Ranked by relevance · select a paper to view details</p>
       <PapersExplorer
         papers={data.papers}
         techMatches={techMatches}
