@@ -2,15 +2,22 @@
 Main FastAPI app. /search runs the full pipeline; /tech-match is a
 separate, optional, on-demand call.
 
-Stage timings are printed to the console (uvicorn terminal) so you can
-see exactly where time is going on a slow request.
+Key changes from the original:
+  - Global asyncio.Semaphore(GEMINI_CONCURRENCY) caps concurrent Gemini calls.
+  - extract_papers() and build_knowledge_graph() are now async — awaited here.
+  - Structured logging at each stage shows timing, cache hit/miss, and model used.
+  - The existing in-memory LRU query cache is preserved for full-query dedup.
+  - All API endpoints and JSON response schemas are unchanged.
 """
+import asyncio
+import logging
 import os
 import time
-from functools import lru_cache
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+import google.generativeai as genai
 
 from app.models.schemas import (
     SearchResponse,
@@ -27,6 +34,22 @@ from app.services.techmatch_service import match_tech_stack
 
 load_dotenv()
 
+# Configure Gemini globally on startup
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+
+# ---------------------------------------------------------------------------
+# Logging — structured output visible in uvicorn terminal
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-7s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
 app = FastAPI(title="Research Copilot")
 
 app.add_middleware(
@@ -36,12 +59,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ARXIV_CANDIDATE_COUNT = int(os.environ.get("ARXIV_CANDIDATE_COUNT", 10))
-TOP_K_PAPERS = int(os.environ.get("TOP_K_PAPERS", 5))
+# ---------------------------------------------------------------------------
+# Pipeline tuning — configurable via .env
+# ---------------------------------------------------------------------------
+ARXIV_CANDIDATE_COUNT = int(os.environ.get("ARXIV_CANDIDATE_COUNT", 15))
+TOP_K_PAPERS          = int(os.environ.get("TOP_K_PAPERS", 5))
+GEMINI_CONCURRENCY    = int(os.environ.get("GEMINI_CONCURRENCY", 3))
+
+# Global semaphore: limits simultaneous Gemini API calls across all requests.
+# Initialised at module load so it is shared across the entire process lifetime.
+_gemini_semaphore: asyncio.Semaphore | None = None
+
+
+@app.on_event("startup")
+async def _startup():
+    global _gemini_semaphore
+    _gemini_semaphore = asyncio.Semaphore(GEMINI_CONCURRENCY)
+    logger.info(
+        "[startup] Gemini concurrency cap = %d | candidates = %d | top_k = %d",
+        GEMINI_CONCURRENCY, ARXIV_CANDIDATE_COUNT, TOP_K_PAPERS,
+    )
+
 
 # ---------------------------------------------------------------------------
-# Simple in-memory result cache — repeated queries are served instantly
-# without re-running the full pipeline (LRU, keeps last 64 unique queries).
+# In-memory LRU query cache (preserved from original)
+# Caches the full SearchResponse dict for the last 64 unique queries.
+# This is a fast first-level cache before hitting SQLite per-paper caches.
 # ---------------------------------------------------------------------------
 _result_cache: dict[str, dict] = {}
 _MAX_CACHE = 64
@@ -62,6 +105,9 @@ def _cache_set(key: str, value: dict):
         _result_cache.pop(oldest, None)
 
 
+# ---------------------------------------------------------------------------
+# Relevance score normalisation (unchanged from original)
+# ---------------------------------------------------------------------------
 def _relevance_scores(top_papers):
     scores = [p.score for p in top_papers if p.score is not None]
     if not scores:
@@ -77,6 +123,10 @@ def _relevance_scores(top_papers):
     return result
 
 
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -90,33 +140,43 @@ async def search(query: str):  # noqa: C901
     cache_key = query.strip().lower()
     cached = _cache_get(cache_key)
     if cached:
-        print("[cache hit]  serving '%s' from cache" % query)
+        logger.info("[search] QUERY CACHE HIT — '%s'", query)
         return SearchResponse(**cached)
 
     t0 = time.perf_counter()
+
+    # --- Stage 1: Retrieve candidates from arXiv ---
     candidates = search_arxiv(query, max_results=ARXIV_CANDIDATE_COUNT)
-    print("[stage 1: retrieve]   %.1fs  (%d papers)" % (time.perf_counter() - t0, len(candidates)))
+    logger.info(
+        "[stage 1: retrieve]   %.1fs  (%d papers)",
+        time.perf_counter() - t0, len(candidates),
+    )
     if not candidates:
         raise HTTPException(status_code=404, detail="No papers found for this query")
 
+    # --- Stage 2: Semantic rerank ---
     t1 = time.perf_counter()
     top_papers = rerank_papers(query, candidates, top_k=TOP_K_PAPERS)
-    print("[stage 2: rerank]     %.1fs" % (time.perf_counter() - t1))
+    logger.info("[stage 2: rerank]     %.1fs", time.perf_counter() - t1)
 
+    # --- Stage 3: PDF download + text extraction (cache-aware, parallel) ---
     t2 = time.perf_counter()
     texts = await get_paper_texts(top_papers)
-    print("[stage 3: pdf+parse]  %.1fs" % (time.perf_counter() - t2))
+    logger.info("[stage 3: pdf+parse]  %.1fs", time.perf_counter() - t2)
 
+    # --- Stage 4: Structured extraction (cache-aware, semaphore-bounded) ---
     t3 = time.perf_counter()
-    extracted = extract_papers(top_papers, texts)
-    print("[stage 4: extract]    %.1fs" % (time.perf_counter() - t3))
+    extracted = await extract_papers(top_papers, texts, semaphore=_gemini_semaphore)
+    logger.info("[stage 4: extract]    %.1fs", time.perf_counter() - t3)
 
+    # --- Stage 5: Knowledge graph synthesis (cache-aware) ---
     t4 = time.perf_counter()
-    graph = build_knowledge_graph(extracted)
-    print("[stage 5: synthesize] %.1fs" % (time.perf_counter() - t4))
+    graph = await build_knowledge_graph(extracted)
+    logger.info("[stage 5: synthesize] %.1fs", time.perf_counter() - t4)
 
-    print("[TOTAL]               %.1fs" % (time.perf_counter() - t0))
+    logger.info("[TOTAL]               %.1fs", time.perf_counter() - t0)
 
+    # --- Assemble response (schema unchanged) ---
     candidates_by_id = {p.arxiv_id: p for p in top_papers}
     relevance = _relevance_scores(top_papers)
 

@@ -1,18 +1,25 @@
 """
 On-demand tech-stack matching. Deliberately kept OUT of the main pipeline
 so it only costs a Gemini call when a user has set a tech stack in
-Settings and actually views Results - not on every single search.
+Settings and actually views Results — not on every single search.
+
+Updated to use gemini_client for consistent model routing and fallback.
 """
 import json
-import google.generativeai as genai
-from tenacity import retry, stop_after_attempt, wait_exponential
-from app.services.extraction_service import MODEL_NAME
+import logging
 
-TECH_MATCH_PROMPT = """You are assessing how relevant {count} research papers are to a person's technical skill set.
+from app.services import gemini_client
+
+logger = logging.getLogger(__name__)
+
+TECH_MATCH_PROMPT = """\
+You are assessing how relevant {count} research papers are to a person's technical skill set.
 
 PERSON'S TECH STACK: {tech_stack}
 
-For EACH paper, and for EACH technology in the tech stack, judge how relevant that technology is to actually understanding or reproducing the paper, based on its method and contribution below. Use exactly one of: "high", "moderate", "low".
+For EACH paper, and for EACH technology in the tech stack, judge how relevant that technology
+is to actually understanding or reproducing the paper, based on its method and contribution below.
+Use exactly one of: "high", "moderate", "low".
 - "high": the technology is central to the paper's implementation or directly used
 - "moderate": background knowledge of it helps but isn't core to the paper
 - "low": largely unrelated to this paper's approach
@@ -43,22 +50,15 @@ def _build_papers_block(papers):
     return "\n".join(blocks)
 
 
-@retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=2, min=2, max=30))
-def _call_gemini(prompt):
-    model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(
-        prompt,
-        generation_config={"response_mime_type": "application/json"},
-    )
-    return response.text
-
-
 def match_tech_stack(papers, tech_stack):
+    import asyncio
     prompt = TECH_MATCH_PROMPT.format(
         count=len(papers),
         tech_stack=", ".join(tech_stack),
         papers_block=_build_papers_block(papers),
     )
-    raw = _call_gemini(prompt)
+    # Run the async gemini_client call in a new event loop slice
+    raw = asyncio.get_event_loop().run_until_complete(
+        gemini_client.call_gemini("extraction", prompt, semaphore=None)
+    )
     return json.loads(raw)
-    
