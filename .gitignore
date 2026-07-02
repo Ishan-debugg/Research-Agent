@@ -33,3 +33,6 @@ Thumbs.db
 *.override.yml
 
 frontend/.env.local
+
+# Runtime cache — SQLite db is generated at runtime, not source code
+backend/cache/

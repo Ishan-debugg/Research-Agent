@@ -221,9 +221,9 @@ async def search(query: str):  # noqa: C901
 
 
 @app.post("/tech-match", response_model=TechMatchResponse)
-def tech_match(payload: TechMatchRequest):
+async def tech_match(payload: TechMatchRequest):
     if not payload.tech_stack:
         raise HTTPException(status_code=400, detail="tech_stack must not be empty")
     papers_dicts = [p.dict() for p in payload.papers]
-    result = match_tech_stack(papers_dicts, payload.tech_stack)
+    result = await match_tech_stack(papers_dicts, payload.tech_stack)
     return TechMatchResponse(**result)

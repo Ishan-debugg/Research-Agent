@@ -192,15 +192,22 @@ PAPERS:
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Cap per-paper text length. Sending the full PDF text worsens TPM (tokens-per-minute)
+# quota exhaustion — more tokens per call means hitting the ceiling faster even with
+# fewer requests. 15k chars covers abstract + intro + most of methods/results for a
+# typical arXiv paper, which is exactly where the fields we extract live.
+MAX_CHARS_PER_PAPER = 15_000
+
+
 def _build_papers_block(papers, texts: dict[str, str]) -> str:
     blocks = []
     for p in papers:
-        # Use full text — cache prevents re-paying token cost on repeated lookups
         text = texts.get(p.arxiv_id, p.abstract)
+        truncated = text[:MAX_CHARS_PER_PAPER]
         blocks.append(
             "---\narxiv_id: " + p.arxiv_id
             + "\ntitle: " + p.title
-            + "\ntext:\n" + text
+            + "\ntext:\n" + truncated
             + "\n"
         )
     return "\n".join(blocks)

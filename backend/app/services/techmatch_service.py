@@ -3,7 +3,9 @@ On-demand tech-stack matching. Deliberately kept OUT of the main pipeline
 so it only costs a Gemini call when a user has set a tech stack in
 Settings and actually views Results — not on every single search.
 
-Updated to use gemini_client for consistent model routing and fallback.
+Updated to be a proper async function routed through gemini_client,
+eliminating the fragile asyncio.get_event_loop().run_until_complete()
+anti-pattern that breaks under FastAPI's async worker model.
 """
 import json
 import logging
@@ -50,15 +52,16 @@ def _build_papers_block(papers):
     return "\n".join(blocks)
 
 
-def match_tech_stack(papers, tech_stack):
-    import asyncio
+async def match_tech_stack(papers, tech_stack):
+    """
+    Async tech-stack matching. Previously used the fragile
+    asyncio.get_event_loop().run_until_complete() pattern — now a proper
+    async function so FastAPI can await it directly without thread-pool hacks.
+    """
     prompt = TECH_MATCH_PROMPT.format(
         count=len(papers),
         tech_stack=", ".join(tech_stack),
         papers_block=_build_papers_block(papers),
     )
-    # Run the async gemini_client call in a new event loop slice
-    raw = asyncio.get_event_loop().run_until_complete(
-        gemini_client.call_gemini("extraction", prompt, semaphore=None)
-    )
+    raw = await gemini_client.call_gemini("extraction", prompt, semaphore=None)
     return json.loads(raw)

@@ -34,12 +34,8 @@ import os
 import time
 
 import google.generativeai as genai
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+# tenacity is used by individual services for retry logic;
+# gemini_client handles rate-limit fallback directly via try/except + asyncio.sleep
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +118,7 @@ async def call_gemini(
     fallback_model = cfg["fallback"]
     temperature    = cfg["temperature"]
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     async def _run_with_model(model_name: str) -> str:
         """Run the synchronous Gemini call in a thread pool."""
@@ -130,7 +126,6 @@ async def call_gemini(
             None, _call_model_sync, model_name, prompt, temperature
         )
 
-    acquire = semaphore.acquire() if semaphore else asyncio.sleep(0)
 
     async with (semaphore if semaphore else _null_context()):
         t0 = time.perf_counter()
