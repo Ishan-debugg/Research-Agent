@@ -70,7 +70,7 @@ _TASK_CONFIG: dict[str, dict] = {
         "temperature":      0.2,
         "top_p":            0.9,     # Tighter nucleus sampling
         "top_k":            40,      # Standard diverse decoding
-        "max_output_tokens": 2048,   # Graph JSON is typically ~1k tokens
+        "max_output_tokens": 4096,   # Graph JSON is typically ~1-3k tokens
     },
 }
 

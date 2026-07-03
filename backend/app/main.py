@@ -69,17 +69,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Inject a default request_id for log records that don't have one
-old_factory = logging.getLogRecordFactory()
+class RequestIDFilter(logging.Filter):
+    def filter(self, record):
+        if not hasattr(record, "request_id"):
+            record.request_id = "system"
+        return True
 
+# Attach to all root handlers so it applies globally (even to uvicorn loggers)
+for handler in logging.getLogger().handlers:
+    handler.addFilter(RequestIDFilter())
 
-def _log_record_factory(*args, **kwargs):
-    record = old_factory(*args, **kwargs)
-    if not hasattr(record, "request_id"):
-        record.request_id = "system"
-    return record
-
-
-logging.setLogRecordFactory(_log_record_factory)
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +112,7 @@ app.add_middleware(
 )
 
 # --- GZip Compression (for responses > 500 bytes) ---
-app.add_middleware(GZipMiddleware, minimum_size=500)
+# app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # --- Prometheus Metrics ---
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
@@ -274,7 +273,6 @@ async def _run_pipeline(query: str, request_id: str = ""):
     logger.info(
         "[stage 1: retrieve]   %.1fs  (%d papers)",
         time.perf_counter() - t0, len(candidates),
-        extra={"request_id": request_id},
     )
     if not candidates:
         raise HTTPException(status_code=404, detail="No papers found for this query")
@@ -285,7 +283,6 @@ async def _run_pipeline(query: str, request_id: str = ""):
     logger.info(
         "[stage 2: rerank]     %.1fs",
         time.perf_counter() - t1,
-        extra={"request_id": request_id},
     )
 
     # --- Stage 3: PDF download + text extraction (cache-aware, parallel) ---
@@ -294,7 +291,6 @@ async def _run_pipeline(query: str, request_id: str = ""):
     logger.info(
         "[stage 3: pdf+parse]  %.1fs",
         time.perf_counter() - t2,
-        extra={"request_id": request_id},
     )
 
     # --- Stage 4: Structured extraction (cache-aware, semaphore-bounded) ---
@@ -305,7 +301,6 @@ async def _run_pipeline(query: str, request_id: str = ""):
     logger.info(
         "[stage 4: extract]    %.1fs  (%d ok, %d errors)",
         time.perf_counter() - t3, len(extracted), len(extraction_errors),
-        extra={"request_id": request_id},
     )
 
     # --- Stage 5: Knowledge graph synthesis (cache-aware) ---
@@ -314,13 +309,11 @@ async def _run_pipeline(query: str, request_id: str = ""):
     logger.info(
         "[stage 5: synthesize] %.1fs",
         time.perf_counter() - t4,
-        extra={"request_id": request_id},
     )
 
     logger.info(
         "[TOTAL]               %.1fs",
         time.perf_counter() - t0,
-        extra={"request_id": request_id},
     )
 
     # --- Assemble response (schema unchanged + new error list) ---
@@ -417,7 +410,6 @@ async def search(request: Request, query: str):  # noqa: C901
     if cached:
         logger.info(
             "[search] QUERY CACHE HIT — '%s'", query,
-            extra={"request_id": request_id},
         )
         # Update request_id in cached response
         cached_response = SearchResponse(**cached)
@@ -433,7 +425,6 @@ async def search(request: Request, query: str):  # noqa: C901
         logger.error(
             "[search] Pipeline timed out after %ds for query: '%s'",
             PIPELINE_TIMEOUT, query,
-            extra={"request_id": request_id},
         )
         raise HTTPException(
             status_code=504,
@@ -600,7 +591,6 @@ async def search_stream(request: Request, query: str):
         except Exception as exc:
             logger.error(
                 "[search/stream] Pipeline error: %s", exc,
-                extra={"request_id": request_id},
             )
             yield _sse_event("error", {"message": str(exc)})
 
