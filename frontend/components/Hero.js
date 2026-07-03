@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useUserProfile } from "../context/UserProfileContext";
 
-const BADGES = ["arXiv", "Gemini 3.1 Flash-Lite", "Cross-Encoder Reranking", "PyMuPDF"];
+const BADGES = ["arXiv", "Gemini 2.5 Flash", "Cross-Encoder Reranking", "PyMuPDF"];
 
 export default function Hero() {
   const { theme } = useUserProfile();

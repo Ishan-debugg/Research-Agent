@@ -5,24 +5,43 @@ import { usePathname } from "next/navigation";
 import { useResearch } from "../context/ResearchContext";
 
 const LINKS = [
-  { href: "/", label: "Home", needsData: false },
-  { href: "/search", label: "Search", needsData: false },
-  { href: "/results", label: "Results", needsData: true },
-  { href: "/graph", label: "Graph", needsData: true },
-  { href: "/history", label: "History", needsData: false },
-  { href: "/settings", label: "Settings", needsData: false },
+  { href: "/",        label: "Home",     needsData: false },
+  { href: "/search",  label: "Search",   needsData: false },
+  { href: "/results", label: "Results",  needsData: true  },
+  { href: "/graph",   label: "Graph",    needsData: true  },
+  { href: "/history", label: "History",  needsData: false },
+  { href: "/settings",label: "Settings", needsData: false },
 ];
 
 export default function Navbar() {
   const pathname = usePathname();
   const research = useResearch();
+  const isLoading = research.status === "loading";
 
   return (
     <nav className="sticky top-0 z-50 border-b border-[var(--border)] bg-[var(--bg)]/90 backdrop-blur">
       <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-        <Link href="/" className="font-[var(--font-display)] text-lg tracking-tight">
-          Research<span className="text-[var(--accent)]">Copilot</span>
-        </Link>
+
+        {/* Logo + live pipeline indicator */}
+        <div className="flex items-center gap-3">
+          <Link href="/" className="font-[var(--font-display)] text-lg tracking-tight">
+            Research<span className="text-[var(--accent)]">Copilot</span>
+          </Link>
+
+          {/* Pulsing dot + stage label while pipeline runs */}
+          {isLoading && (
+            <div className="flex items-center gap-1.5 font-[var(--font-mono)] text-[10px] text-[var(--accent)] uppercase tracking-widest">
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-ping inline-block" />
+              <span className="opacity-70">
+                {research.liveMessage
+                  ? research.liveMessage.replace(/\.\.\.$/, "")
+                  : "pipeline running"}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Nav links */}
         <div className="flex items-center gap-5 text-sm">
           {LINKS.map(function (link) {
             const disabled = link.needsData && !research.data;

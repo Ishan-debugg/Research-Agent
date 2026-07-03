@@ -12,20 +12,27 @@ const EXAMPLES = [
   "RLHF alignment",
 ];
 
+const MAX_CHARS = 500;
+const MIN_CHARS = 3;
+
 export default function SearchPage() {
   const [query, setQuery] = useState("");
   const research = useResearch();
   const router = useRouter();
 
+  const charCount = query.length;
+  const isOverLimit = charCount > MAX_CHARS;
+  const isUnderLimit = charCount > 0 && charCount < MIN_CHARS;
+  const isValid = !isOverLimit && !isUnderLimit && query.trim().length > 0;
+
   function handleSubmit(e) {
     e.preventDefault();
     const trimmed = query.trim();
-    if (!trimmed) return;
+    if (!isValid) return;
     research.startSearch(trimmed);
     router.push("/processing");
   }
 
-  /* ── Improvement: auto-submit on chip click ── */
   function handleExample(topic) {
     setQuery(topic);
     research.startSearch(topic);
@@ -42,19 +49,44 @@ export default function SearchPage() {
       </h1>
 
       <form onSubmit={handleSubmit} className="w-full max-w-xl">
-        <input
-          type="text"
-          value={query}
-          onChange={function (e) {
-            setQuery(e.target.value);
-          }}
-          placeholder="e.g. retrieval-augmented generation"
-          className="w-full px-4 py-3 rounded-md bg-[var(--surface)] border border-[var(--border)] text-sm focus:outline-none focus:border-[var(--accent)]"
-          autoFocus
-        />
+        <div className="relative">
+          <input
+            type="text"
+            value={query}
+            onChange={function (e) {
+              setQuery(e.target.value);
+            }}
+            placeholder="e.g. retrieval-augmented generation"
+            className={`w-full px-4 py-3 rounded-md bg-[var(--surface)] border text-sm focus:outline-none transition-colors pr-16 ${
+              isOverLimit ? "border-[var(--bad)] focus:border-[var(--bad)]" : "border-[var(--border)] focus:border-[var(--accent)]"
+            }`}
+            autoFocus
+          />
+          {/* Character counter */}
+          <div
+            className={`absolute right-3 top-1/2 -translate-y-1/2 font-[var(--font-mono)] text-[10px] ${
+              isOverLimit ? "text-[var(--bad)]" : "text-[var(--text-muted)]"
+            }`}
+          >
+            {charCount > 0 && `${charCount}/${MAX_CHARS}`}
+          </div>
+        </div>
+        
+        {/* Validation messages */}
+        {isOverLimit && (
+          <p className="text-xs text-[var(--bad)] mt-2 font-[var(--font-mono)]">
+            Query exceeds the {MAX_CHARS} character limit.
+          </p>
+        )}
+        {isUnderLimit && (
+          <p className="text-xs text-[var(--bad)] mt-2 font-[var(--font-mono)]">
+            Query must be at least {MIN_CHARS} characters.
+          </p>
+        )}
+
         <button
           type="submit"
-          disabled={!query.trim()}
+          disabled={!isValid}
           className="w-full mt-3 py-3 rounded-md bg-[var(--accent)] text-[var(--bg)] font-medium tracking-wide disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity"
         >
           RESEARCH COPILOT

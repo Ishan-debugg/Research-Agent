@@ -1,11 +1,11 @@
 const FAQS = [
   {
     q: "Where do the papers come from?",
-    a: "Every paper is pulled live from arXiv at search time, nothing is pre-indexed or cached from a static dataset.",
+    a: "Every paper is pulled live from arXiv at search time. Nothing is pre-indexed or cached from a static dataset.",
   },
   {
     q: "How are benchmark metrics extracted?",
-    a: 'Where a paper reports Precision, Recall, F1, Accuracy, or similar metrics in its text, they are pulled out directly. If a paper does not report a metric, it is marked "Not reported" rather than estimated.',
+    a: 'Where a paper reports Precision, Recall, F1, Accuracy, or similar metrics in its text, they are pulled out directly. If a paper does not report a metric, it is marked "Not reported" rather than estimated. Any custom or niche metrics are captured under "Other Metrics".',
   },
   {
     q: "Can I trust the synthesized summary?",
@@ -13,8 +13,12 @@ const FAQS = [
   },
   {
     q: "Why only 5 papers per search?",
-    a: "Depth over breadth. Reading 5 papers properly, full text and not just abstracts, produces a more reliable landscape than skimming 20.",
+    a: "Depth over breadth. Reading 5 papers properly, full text and not just abstracts, produces a more reliable landscape than skimming 20. The pipeline analyzes up to 20 candidates and reranks them to find the best 5 before extracting text.",
   },
+  {
+    q: "Is there a limit on searches?",
+    a: "To ensure fair usage of the AI models, searches are limited to 10 requests per minute per IP address. If you exceed this, you will see a 'Slow down!' message.",
+  }
 ];
 
 export default function FAQSection() {
@@ -27,8 +31,8 @@ export default function FAQSection() {
         {FAQS.map(function (item) {
           return (
             <details key={item.q} className="group py-5">
-              <summary className="flex justify-between items-center cursor-pointer list-none">
-                <span className="font-medium">{item.q}</span>
+              <summary className="flex justify-between items-center cursor-pointer list-none outline-none">
+                <span className="font-medium group-focus-visible:text-[var(--accent)] transition-colors">{item.q}</span>
                 <span className="text-[var(--text-muted)] group-open:rotate-45 transition-transform">
                   +
                 </span>
