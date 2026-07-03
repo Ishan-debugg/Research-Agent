@@ -9,6 +9,12 @@ Key improvements over the original:
   2. TIMING LOGS — Per-paper download and extraction time is logged so
      bottlenecks are immediately visible in the uvicorn terminal.
 
+  3. RETRY with BACKOFF — Downloads retry up to 2 times with a 3s wait
+     to handle transient arXiv CDN failures.
+
+  4. EXTENDED TIMEOUT — 30s timeout (up from 15s) to accommodate slow
+     arXiv CDN responses during peak hours.
+
 Original safeguards preserved:
   - Async/concurrent downloads via asyncio.gather
   - Fallback to abstract-only text when PDF extraction fails
@@ -28,19 +34,39 @@ from app.services import cache_service
 logger = logging.getLogger(__name__)
 
 MIN_VALID_TEXT_LENGTH = 500  # below this, treat extraction as failed
+MAX_DOWNLOAD_RETRIES = 2
+RETRY_DELAY_SECONDS = 3.0
+DOWNLOAD_TIMEOUT_SECONDS = 30.0
 
 
 async def _download_pdf(client: httpx.AsyncClient, url: str) -> bytes | None:
-    t0 = time.perf_counter()
-    try:
-        resp = await client.get(url, timeout=15.0, follow_redirects=True)
-        resp.raise_for_status()
-        elapsed = time.perf_counter() - t0
-        logger.info("[pdf] Downloaded %.0f KB in %.1fs — %s", len(resp.content) / 1024, elapsed, url)
-        return resp.content
-    except Exception as e:
-        logger.warning("[pdf] Download failed (%.1fs): %s — %s", time.perf_counter() - t0, type(e).__name__, url)
-        return None
+    """Download PDF with retry and extended timeout."""
+    for attempt in range(1, MAX_DOWNLOAD_RETRIES + 1):
+        t0 = time.perf_counter()
+        try:
+            resp = await client.get(url, timeout=DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True)
+            resp.raise_for_status()
+            elapsed = time.perf_counter() - t0
+            logger.info(
+                "[pdf] Downloaded %.0f KB in %.1fs — %s",
+                len(resp.content) / 1024, elapsed, url,
+            )
+            return resp.content
+        except Exception as e:
+            elapsed = time.perf_counter() - t0
+            if attempt < MAX_DOWNLOAD_RETRIES:
+                logger.warning(
+                    "[pdf] Download attempt %d/%d failed (%.1fs): %s — %s  Retrying in %.0fs...",
+                    attempt, MAX_DOWNLOAD_RETRIES, elapsed,
+                    type(e).__name__, url, RETRY_DELAY_SECONDS,
+                )
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
+            else:
+                logger.warning(
+                    "[pdf] Download FAILED after %d attempts (%.1fs): %s — %s",
+                    MAX_DOWNLOAD_RETRIES, elapsed, type(e).__name__, url,
+                )
+    return None
 
 
 def _extract_text(pdf_bytes: bytes, max_pages: int = 10) -> str:

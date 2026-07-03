@@ -11,7 +11,7 @@ Key improvements over the original:
 
   3. ASYNC + SEMAPHORE CONCURRENCY — extract_papers() is now async and accepts
      an asyncio.Semaphore so the caller (main.py) can cap simultaneous Gemini
-     calls to GEMINI_CONCURRENCY (default: 3).
+     calls to GEMINI_CONCURRENCY (default: 5).
 
   4. DETERMINISTIC TEMPERATURE — extraction runs at temperature=0.0 via
      gemini_client, eliminating hallucinated numeric values.
@@ -19,6 +19,10 @@ Key improvements over the original:
   5. FULL TEXT — The brittle text[1500:10000] slice is removed. The full
      extracted PDF text is sent; Gemini 2.5 models handle large contexts well,
      and the cache prevents re-paying that token cost on repeated lookups.
+
+  6. GRACEFUL DEGRADATION — Per-paper try/except ensures one bad paper doesn't
+     kill the entire batch. Failed papers are logged and skipped with an error
+     list returned alongside successful extractions.
 
 Few-shot structure (modular — add/remove examples by editing FEW_SHOT_EXAMPLES):
   EXTRACTION_PROMPT_TEMPLATE
@@ -221,28 +225,37 @@ async def extract_papers(
     papers,
     texts: dict[str, str],
     semaphore: asyncio.Semaphore | None = None,
-) -> list[ExtractedPaper]:
+) -> tuple[list[ExtractedPaper], list[dict]]:
     """
     Async structured extraction with per-paper SQLite caching.
 
     Papers already in the cache skip the Gemini call entirely.
     Only cache-miss papers are batched into a single Gemini request
     (bounded by the semaphore for concurrency control).
+
+    Returns:
+        Tuple of (successful_extractions, errors) where errors is a list of
+        {"arxiv_id": ..., "error": ...} dicts for papers that failed extraction.
     """
     results: list[ExtractedPaper] = []
+    errors: list[dict] = []
     uncached_papers = []
 
     # --- Stage A: Serve cached extractions ---
     for p in papers:
         cached = cache_service.get_extraction(p.arxiv_id)
         if cached:
-            results.append(ExtractedPaper(**cached))
+            try:
+                results.append(ExtractedPaper(**cached))
+            except Exception as e:
+                logger.warning("[extraction] Cached data invalid for %s: %s", p.arxiv_id, e)
+                uncached_papers.append(p)
         else:
             uncached_papers.append(p)
 
     if not uncached_papers:
         logger.info("[extraction] All %d papers served from cache.", len(papers))
-        return results
+        return results, errors
 
     logger.info(
         "[extraction] %d cache hits, %d cache misses — calling Gemini.",
@@ -256,17 +269,45 @@ async def extract_papers(
         papers_block=_build_papers_block(uncached_papers, texts),
     )
 
-    raw = await gemini_client.call_gemini("extraction", prompt, semaphore)
+    try:
+        raw = await gemini_client.call_gemini("extraction", prompt, semaphore)
+    except Exception as e:
+        logger.error("[extraction] Gemini call failed entirely: %s", e)
+        # All uncached papers fail — add them to errors
+        for p in uncached_papers:
+            errors.append({"arxiv_id": p.arxiv_id, "title": p.title, "error": str(e)})
+        return results, errors
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
         logger.error("[extraction] JSON parse error: %s\nRaw: %.300s", e, raw)
-        raise
+        for p in uncached_papers:
+            errors.append({"arxiv_id": p.arxiv_id, "title": p.title, "error": f"JSON parse error: {e}"})
+        return results, errors
 
+    # --- Stage C: Parse each extracted paper individually (graceful degradation) ---
     for item in data:
-        ep = ExtractedPaper(**item)
-        cache_service.set_extraction(ep.arxiv_id, item)
-        results.append(ep)
+        try:
+            ep = ExtractedPaper(**item)
+            cache_service.set_extraction(ep.arxiv_id, item)
+            results.append(ep)
+        except Exception as e:
+            arxiv_id = item.get("arxiv_id", "unknown")
+            logger.warning(
+                "[extraction] Failed to parse extraction for %s: %s — skipping.",
+                arxiv_id, e,
+            )
+            errors.append({
+                "arxiv_id": arxiv_id,
+                "title": item.get("title", "Unknown"),
+                "error": f"Extraction parse error: {e}",
+            })
 
-    return results
+    if errors:
+        logger.warning(
+            "[extraction] %d/%d papers extracted successfully, %d failed.",
+            len(results), len(papers), len(errors),
+        )
+
+    return results, errors

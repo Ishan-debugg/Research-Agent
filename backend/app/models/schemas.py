@@ -1,8 +1,13 @@
 """
 Pydantic models shared across the pipeline.
+
+Changes:
+  - SearchResponse now includes optional 'errors' and 'request_id' fields.
+  - 'errors' carries details about papers that failed extraction (graceful degradation).
+  - 'request_id' is a UUID assigned by the middleware for traceability.
 """
 from pydantic import BaseModel, Field
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 
 class PaperCandidate(BaseModel):
@@ -86,10 +91,19 @@ class KnowledgeGraph(BaseModel):
     summary: str = ""
 
 
+class ExtractionError(BaseModel):
+    """Details about a paper that failed during extraction."""
+    arxiv_id: str
+    title: str = "Unknown"
+    error: str
+
+
 class SearchResponse(BaseModel):
     query: str
     papers: List[PaperResult]
     graph: KnowledgeGraph
+    errors: List[ExtractionError] = Field(default_factory=list)
+    request_id: Optional[str] = None
 
 
 class TechMatchPaperInput(BaseModel):

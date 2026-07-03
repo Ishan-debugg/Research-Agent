@@ -7,16 +7,16 @@ Architecture:
     SYNTHESIS_MODEL   (default: gemini-2.5-flash)        — smarter, for graph/summary
 
   Task routing:
-    "extraction" → EXTRACTION_MODEL  (temperature=0.0)
-    "synthesis"  → SYNTHESIS_MODEL   (temperature=0.2)
+    "extraction" → EXTRACTION_MODEL  (temperature=0.0, top_k=1, top_p=1.0)
+    "synthesis"  → SYNTHESIS_MODEL   (temperature=0.2, top_k=40, top_p=0.9)
 
   Fallback strategy:
-    On HTTP 429 (ResourceExhausted) the router automatically retries the
-    *other* model in the tier with exponential backoff. This prevents a
-    single rate-limited model from stalling the entire pipeline.
+    On HTTP 429 (ResourceExhausted) the router automatically retries with
+    exponential backoff + jitter via tenacity. If the primary model is exhausted,
+    it falls back to the alternate model in the tier.
 
   Concurrency:
-    All callers pass an asyncio.Semaphore (created in main.py, default max=3).
+    All callers pass an asyncio.Semaphore (created in main.py, default max=5).
     This caps simultaneous Gemini requests to avoid hitting RPM limits.
 
   Logging:
@@ -34,8 +34,12 @@ import os
 import time
 
 import google.generativeai as genai
-# tenacity is used by individual services for retry logic;
-# gemini_client handles rate-limit fallback directly via try/except + asyncio.sleep
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential_jitter,
+    retry_if_exception,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +55,22 @@ MODEL_NAME = EXTRACTION_MODEL
 
 _TASK_CONFIG: dict[str, dict] = {
     "extraction": {
-        "primary":     EXTRACTION_MODEL,
-        "fallback":    SYNTHESIS_MODEL,
+        "primary":          EXTRACTION_MODEL,
+        "fallback":         SYNTHESIS_MODEL,
         # Temperature 0.0 → maximally deterministic; eliminates hallucinated metrics
-        "temperature": 0.0,
+        "temperature":      0.0,
+        "top_p":            1.0,     # No nucleus sampling at T=0 (greedy)
+        "top_k":            1,       # Greedy decoding — single most likely token
+        "max_output_tokens": 4096,   # Extraction JSON for 5 papers ≈ 3-4k tokens
     },
     "synthesis": {
-        "primary":     SYNTHESIS_MODEL,
-        "fallback":    EXTRACTION_MODEL,
+        "primary":          SYNTHESIS_MODEL,
+        "fallback":         EXTRACTION_MODEL,
         # Small temperature for creative cross-paper relationships
-        "temperature": 0.2,
+        "temperature":      0.2,
+        "top_p":            0.9,     # Tighter nucleus sampling
+        "top_k":            40,      # Standard diverse decoding
+        "max_output_tokens": 2048,   # Graph JSON is typically ~1k tokens
     },
 }
 
@@ -75,7 +85,8 @@ def _is_rate_limit(exc: Exception) -> bool:
     return "429" in msg or "resource_exhausted" in msg or "quota" in msg
 
 
-def _call_model_sync(model_name: str, prompt: str, temperature: float) -> str:
+def _call_model_sync(model_name: str, prompt: str, temperature: float,
+                     top_p: float, top_k: int, max_output_tokens: int) -> str:
     """Make a single synchronous Gemini call and return the text response."""
     model = genai.GenerativeModel(model_name)
     response = model.generate_content(
@@ -83,6 +94,9 @@ def _call_model_sync(model_name: str, prompt: str, temperature: float) -> str:
         generation_config={
             "response_mime_type": "application/json",
             "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "max_output_tokens": max_output_tokens,
         },
         request_options={"timeout": 90},
     )
@@ -102,7 +116,7 @@ async def call_gemini(
     Async Gemini call with:
       - Model routing by task_type ("extraction" | "synthesis")
       - Concurrency control via semaphore
-      - Automatic fallback on rate-limit errors
+      - Automatic fallback on rate-limit errors with exponential backoff + jitter
       - Structured latency logging
 
     Args:
@@ -114,23 +128,36 @@ async def call_gemini(
         Raw JSON string from Gemini
     """
     cfg = _TASK_CONFIG.get(task_type, _TASK_CONFIG["extraction"])
-    primary_model  = cfg["primary"]
-    fallback_model = cfg["fallback"]
-    temperature    = cfg["temperature"]
+    primary_model    = cfg["primary"]
+    fallback_model   = cfg["fallback"]
+    temperature      = cfg["temperature"]
+    top_p            = cfg["top_p"]
+    top_k            = cfg["top_k"]
+    max_output_tokens = cfg["max_output_tokens"]
 
     loop = asyncio.get_running_loop()
 
     async def _run_with_model(model_name: str) -> str:
         """Run the synchronous Gemini call in a thread pool."""
         return await loop.run_in_executor(
-            None, _call_model_sync, model_name, prompt, temperature
+            None, _call_model_sync, model_name, prompt,
+            temperature, top_p, top_k, max_output_tokens,
         )
 
+    # Tenacity retry wrapper for transient rate-limit errors
+    @retry(
+        retry=retry_if_exception(_is_rate_limit),
+        wait=wait_exponential_jitter(initial=1, max=30, jitter=2),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    async def _call_primary() -> str:
+        return await _run_with_model(primary_model)
 
     async with (semaphore if semaphore else _null_context()):
         t0 = time.perf_counter()
         try:
-            result = await _run_with_model(primary_model)
+            result = await _call_primary()
             elapsed = time.perf_counter() - t0
             logger.info(
                 "[gemini] %-12s  model=%-30s  %.1fs",
@@ -140,11 +167,9 @@ async def call_gemini(
         except Exception as exc:
             if _is_rate_limit(exc):
                 logger.warning(
-                    "[gemini] RATE LIMIT on %s — falling back to %s",
+                    "[gemini] RATE LIMIT on %s after retries — falling back to %s",
                     primary_model, fallback_model,
                 )
-                # Exponential back-off before hitting fallback
-                await asyncio.sleep(2)
                 t1 = time.perf_counter()
                 try:
                     result = await _run_with_model(fallback_model)
