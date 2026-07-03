@@ -158,6 +158,21 @@ export default function ResultsPage() {
 
   return (
     <main className="max-w-7xl mx-auto px-6 py-16">
+      {/* ── Extraction errors banner ── */}
+      {data.errors && data.errors.length > 0 && (
+        <div className="flex items-start gap-3 bg-[var(--warn)]/10 border border-[var(--warn)]/30 text-[var(--warn)] px-4 py-3 rounded-lg text-sm mb-8">
+          <svg className="shrink-0 mt-0.5" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="8" cy="8" r="7" />
+            <path d="M8 5v3M8 11h.01" />
+          </svg>
+          <span>
+            <strong>{data.errors.length} paper{data.errors.length > 1 ? "s" : ""} failed to extract</strong> and
+            {data.errors.length > 1 ? " were" : " was"} omitted from results.{" "}
+            {data.errors.map(function (e) { return e.title; }).join(", ")}
+          </span>
+        </div>
+      )}
+
       {/* Header row */}
       <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
         <div>
@@ -235,6 +250,15 @@ export default function ResultsPage() {
           View knowledge graph
         </Link>
       </div>
+
+      {/* ── Request ID footer for traceability ── */}
+      {data.request_id && (
+        <div className="mt-12 pt-6 border-t border-[var(--border)] text-center">
+          <p className="font-[var(--font-mono)] text-xs text-[var(--text-muted)]/50 select-all" title="Share this ID with support to trace your request in server logs">
+            request_id: {data.request_id}
+          </p>
+        </div>
+      )}
     </main>
   );
 }
