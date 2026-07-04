@@ -5,15 +5,15 @@ services:
       - "8000:8000"
     env_file:
       - ./backend/.env
-    volumes:
-      - ./backend:/app   # live-reload during development; remove for production builds
+    restart: unless-stopped
 
-  # Once your Next.js frontend exists, uncomment this block:
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
     ports:
       - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
     depends_on:
       - backend
+    restart: unless-stopped
