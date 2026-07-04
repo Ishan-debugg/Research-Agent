@@ -65,7 +65,39 @@ async def match_tech_stack(papers, tech_stack):
     )
     raw = await gemini_client.call_gemini("extraction", prompt, semaphore=None)
     try:
-        return json.loads(gemini_client.sanitize_json(raw))
+        data = json.loads(gemini_client.sanitize_json(raw))
     except json.JSONDecodeError as e:
         logger.error("[techmatch] JSON parse error: %s\nRaw: %.500s", e, raw)
         return {"matches": {}}
+
+    # Sanitize and validate data structure to avoid Pydantic validation errors
+    sanitized_matches = {}
+    if isinstance(data, dict) and "matches" in data and isinstance(data["matches"], dict):
+        for arxiv_id, items in data["matches"].items():
+            if not isinstance(items, list):
+                continue
+            cleaned_items = []
+            for item in items:
+                if isinstance(item, dict):
+                    # Ensure all required keys exist and are strings
+                    tech = str(item.get("tech", "Unknown"))
+                    level = str(item.get("level", "low")).lower()
+                    if level not in {"high", "moderate", "low"}:
+                        level = "low"
+                    explanation = str(item.get("explanation", "Not specified"))
+                    cleaned_items.append({
+                        "tech": tech,
+                        "level": level,
+                        "explanation": explanation
+                    })
+                elif isinstance(item, str):
+                    # Fallback for when Gemini just returns a string (e.g. RNN)
+                    cleaned_items.append({
+                        "tech": item,
+                        "level": "low",
+                        "explanation": "Not specified"
+                    })
+            if cleaned_items:
+                sanitized_matches[str(arxiv_id)] = cleaned_items
+    
+    return {"matches": sanitized_matches}

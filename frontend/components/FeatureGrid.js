@@ -15,7 +15,7 @@ export default function FeatureGrid() {
           return (
             <div
               key={item.n}
-              className="border-r border-b border-[var(--border)] p-8 hover:bg-[var(--surface)] transition-colors duration-200"
+              className="border-r border-b border-[var(--border)] p-8 hover:bg-[var(--accent-soft)] hover:border-[var(--accent)] transition-all duration-200"
             >
               <div className="font-[var(--font-mono)] text-xs text-[var(--text-muted)] mb-6">
                 {item.n}
