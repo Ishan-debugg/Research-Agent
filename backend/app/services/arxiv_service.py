@@ -5,36 +5,47 @@ Free, no API key needed. arXiv's own guideline is to stay polite with
 request frequency, so we keep this to one search call per user query
 rather than looping calls.
 """
+import logging
+
 import arxiv
 from app.models.schemas import PaperCandidate
+
+logger = logging.getLogger(__name__)
 
 
 def search_arxiv(query: str, max_results: int = 20) -> list[PaperCandidate]:
     """
-    Pull candidate papers for a topic. Returns metadata + abstract only -
+    Pull candidate papers for a topic. Returns metadata + abstract only —
     full text comes later in the PDF stage, only for the papers that
     survive reranking (saves time and bandwidth).
-    """
-    client = arxiv.Client()
-    search = arxiv.Search(
-        query=query,
-        max_results=max_results,
-        sort_by=arxiv.SortCriterion.Relevance,
-    )
 
-    candidates = []
-    for result in client.results(search):
-        candidates.append(
-            PaperCandidate(
-                arxiv_id=result.get_short_id(),
-                title=result.title.strip().replace("\n", " "),
-                abstract=result.summary.strip().replace("\n", " "),
-                authors=[a.name for a in result.authors],
-                published=result.published.isoformat(),
-                pdf_url=result.pdf_url,
-            )
+    Returns an empty list (rather than raising) on network/arXiv errors so
+    the pipeline can surface a clean "no papers found" 404 to the user.
+    """
+    try:
+        client = arxiv.Client()
+        search = arxiv.Search(
+            query=query,
+            max_results=max_results,
+            sort_by=arxiv.SortCriterion.Relevance,
         )
-    return candidates
+
+        candidates = []
+        for result in client.results(search):
+            candidates.append(
+                PaperCandidate(
+                    arxiv_id=result.get_short_id(),
+                    title=result.title.strip().replace("\n", " "),
+                    abstract=result.summary.strip().replace("\n", " "),
+                    authors=[a.name for a in result.authors],
+                    published=result.published.isoformat(),
+                    pdf_url=result.pdf_url,
+                )
+            )
+        return candidates
+    except Exception as e:
+        logger.error("[arxiv] Search failed for query '%s': %s", query, e)
+        return []
 
 
 if __name__ == "__main__":

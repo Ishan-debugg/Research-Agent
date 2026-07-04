@@ -112,7 +112,23 @@ def _call_model_sync(model_name: str, prompt: str, temperature: float,
         safety_settings=safety_settings,
         request_options={"timeout": 90},
     )
-    return response.text
+
+    # Guard: an empty response means the model was blocked or returned nothing.
+    # Raise as a generic error so callers can handle it gracefully rather than
+    # letting an empty string reach json.loads() and produce a cryptic parse error.
+    text = response.text if response.text else ""
+    if not text.strip():
+        # Check if safety filters blocked the response
+        block_reason = None
+        try:
+            block_reason = response.prompt_feedback.block_reason
+        except Exception:
+            pass
+        raise ValueError(
+            f"Gemini returned an empty response (block_reason={block_reason}). "
+            "This may be a transient safety filter false-positive on academic content."
+        )
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +176,7 @@ async def call_gemini(
     @retry(
         retry=retry_if_exception(_is_rate_limit),
         wait=wait_exponential_jitter(initial=1, max=30, jitter=2),
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(5),
         reraise=True,
     )
     async def _call_primary() -> str:

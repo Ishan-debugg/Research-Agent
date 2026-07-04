@@ -34,9 +34,10 @@ from app.services import cache_service
 logger = logging.getLogger(__name__)
 
 MIN_VALID_TEXT_LENGTH = 500  # below this, treat extraction as failed
-MAX_DOWNLOAD_RETRIES = 2
+MAX_DOWNLOAD_RETRIES = 3
 RETRY_DELAY_SECONDS = 3.0
 DOWNLOAD_TIMEOUT_SECONDS = 30.0
+PER_PAPER_TIMEOUT_SECONDS = 90.0  # max total time per paper (download + extract)
 
 
 async def _download_pdf(client: httpx.AsyncClient, url: str) -> bytes | None:
@@ -114,10 +115,23 @@ async def get_paper_texts(papers: list[PaperCandidate]) -> dict[str, str]:
     if not uncached_papers:
         return cached_texts
 
-    # --- Stage B: Download uncached PDFs concurrently ---
+    # --- Stage B: Download uncached PDFs concurrently (each with a per-paper timeout) ---
     async with httpx.AsyncClient() as client:
+        async def _download_with_timeout(paper):
+            try:
+                return await asyncio.wait_for(
+                    _download_pdf(client, paper.pdf_url),
+                    timeout=PER_PAPER_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[pdf] Per-paper timeout (%.0fs) exceeded for %s — using abstract fallback.",
+                    PER_PAPER_TIMEOUT_SECONDS, paper.arxiv_id,
+                )
+                return None
+
         pdf_bytes_list = await asyncio.gather(
-            *[_download_pdf(client, p.pdf_url) for p in uncached_papers]
+            *[_download_with_timeout(p) for p in uncached_papers]
         )
 
     # --- Stage C: Extract text and populate cache ---

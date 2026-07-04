@@ -22,10 +22,22 @@ export function ResearchProvider({ children }) {
 
   // Allow abort of in-flight SSE stream
   const abortRef = useRef(null);
+  const watchdogRef = useRef(null); // timeout handle for SSE stall detection
+
+  // Reset the 90-second watchdog timer. Called every time an SSE event arrives.
+  function _resetWatchdog(reject) {
+    if (watchdogRef.current) clearTimeout(watchdogRef.current);
+    watchdogRef.current = setTimeout(() => {
+      reject(new Error(
+        "No response from server for 90 seconds. The pipeline may have stalled — please try again."
+      ));
+    }, 90_000);
+  }
 
   const startSearch = useCallback(async function (q) {
     // Cancel any previous in-flight stream
     if (abortRef.current) abortRef.current.abort();
+    if (watchdogRef.current) clearTimeout(watchdogRef.current);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -39,89 +51,104 @@ export function ResearchProvider({ children }) {
     setLiveProgress(0);
     setLiveElapsed(null);
 
-    try {
-      // Use /search/stream to get real-time SSE progress
-      const fetchHeaders = {};
-      if (API_KEY) fetchHeaders["X-API-Key"] = API_KEY;
+    // Inner function: connect to SSE and read until done.
+    // Returns true if complete, false if we should reconnect once.
+    async function _consumeStream(isRetry) {
+      try {
+        const fetchHeaders = {};
+        if (API_KEY) fetchHeaders["X-API-Key"] = API_KEY;
 
-      const res = await fetch(
-        API_URL + "/search/stream?query=" + encodeURIComponent(q),
-        { signal: controller.signal, headers: fetchHeaders }
-      );
+        const res = await fetch(
+          API_URL + "/search/stream?query=" + encodeURIComponent(q),
+          { signal: controller.signal, headers: fetchHeaders }
+        );
 
-      // Surface clean HTTP errors immediately (429, 422, 504, etc.)
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}));
-        if (res.status === 429) {
-          throw new Error("Too many requests — please wait a moment before searching again.");
+        if (!res.ok) {
+          const detail = await res.json().catch(() => ({}));
+          if (res.status === 429) throw new Error("Too many requests — please wait a moment before searching again.");
+          if (res.status === 504) throw new Error(detail.detail || "The pipeline timed out (>120s). Try a more specific query.");
+          if (res.status === 401) throw new Error("Unauthorized. Check your API key configuration.");
+          throw new Error(detail.detail || "Request failed (" + res.status + ")");
         }
-        if (res.status === 504) {
-          throw new Error(
-            detail.detail ||
-            "The pipeline timed out (>120s). Try a more specific query."
-          );
-        }
-        if (res.status === 401) {
-          throw new Error("Unauthorized. Check your API key configuration.");
-        }
-        throw new Error(detail.detail || "Request failed (" + res.status + ")");
-      }
 
-      // SSE stream — read line by line
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let receivedResult = false;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        // Start the 90-second watchdog
+        await new Promise((resolve, reject) => {
+          _resetWatchdog(reject);
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop(); // keep incomplete last line in buffer
-
-        let eventType = null;
-        let eventData = null;
-
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            eventType = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
+          (async () => {
             try {
-              eventData = JSON.parse(line.slice(6));
-            } catch {
-              // ignore malformed data lines
-            }
-          } else if (line === "" && eventType && eventData !== null) {
-            // Dispatch event
-            if (eventType === "stage") {
-              setLiveStage(eventData.stage);
-              setLiveMessage(eventData.message || "");
-              setLiveProgress(eventData.progress || 0);
-              if (eventData.elapsed != null) setLiveElapsed(eventData.elapsed);
-            } else if (eventType === "result") {
-              const json = eventData.data;
-              setData(json);
-              setStatus("done");
-              saveHistoryEntry({
-                id: Date.now().toString(),
-                query: q,
-                date: new Date().toISOString(),
-                summary: json.graph?.summary || "",
-                data: json,
-              });
-            } else if (eventType === "error") {
-              throw new Error(eventData.message || "Pipeline error");
-            }
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) { resolve(); break; }
 
-            // Reset for next event pair
-            eventType = null;
-            eventData = null;
-          }
-        }
+                _resetWatchdog(reject); // reset timer on each chunk received
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop();
+
+                let eventType = null;
+                let eventData = null;
+
+                for (const line of lines) {
+                  if (line.startsWith("event: ")) {
+                    eventType = line.slice(7).trim();
+                  } else if (line.startsWith("data: ")) {
+                    try { eventData = JSON.parse(line.slice(6)); } catch { /* ignore */ }
+                  } else if (line === "" && eventType && eventData !== null) {
+                    if (eventType === "stage") {
+                      setLiveStage(eventData.stage);
+                      setLiveMessage(eventData.message || "");
+                      setLiveProgress(eventData.progress || 0);
+                      if (eventData.elapsed != null) setLiveElapsed(eventData.elapsed);
+                    } else if (eventType === "result") {
+                      const json = eventData.data;
+                      setData(json);
+                      setStatus("done");
+                      receivedResult = true;
+                      saveHistoryEntry({
+                        id: Date.now().toString(),
+                        query: q,
+                        date: new Date().toISOString(),
+                        summary: json.graph?.summary || "",
+                        data: json,
+                      });
+                    } else if (eventType === "error") {
+                      reject(new Error(eventData.message || "Pipeline error"));
+                      return;
+                    }
+                    eventType = null;
+                    eventData = null;
+                  }
+                }
+              }
+            } catch (e) {
+              reject(e);
+            }
+          })();
+        });
+
+        if (watchdogRef.current) clearTimeout(watchdogRef.current);
+        return receivedResult;
+      } catch (err) {
+        if (watchdogRef.current) clearTimeout(watchdogRef.current);
+        throw err;
+      }
+    }
+
+    try {
+      const complete = await _consumeStream(false);
+      // If stream ended without a result event (network drop), retry once
+      if (!complete) {
+        setLiveMessage("Connection dropped — reconnecting...");
+        await _consumeStream(true);
       }
     } catch (err) {
-      if (err.name === "AbortError") return; // user navigated away — silent
+      if (err.name === "AbortError") return;
       setError(err.message || "Something went wrong");
       setStatus("error");
     }

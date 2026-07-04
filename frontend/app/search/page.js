@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useResearch } from "../../context/ResearchContext";
 
@@ -19,7 +19,9 @@ export default function SearchPage() {
   const [query, setQuery] = useState("");
   const research = useResearch();
   const router = useRouter();
+  const submittingRef = useRef(false); // prevents double-submit on rapid clicks
 
+  const isSearching = research.status === "loading";
   const charCount = query.length;
   const isOverLimit = charCount > MAX_CHARS;
   const isUnderLimit = charCount > 0 && charCount < MIN_CHARS;
@@ -28,15 +30,20 @@ export default function SearchPage() {
   function handleSubmit(e) {
     e.preventDefault();
     const trimmed = query.trim();
-    if (!isValid) return;
+    if (!isValid || submittingRef.current || isSearching) return;
+    submittingRef.current = true;
     research.startSearch(trimmed);
     router.push("/processing");
+    // Reset the lock after navigation so it's clean if the user comes back
+    setTimeout(() => { submittingRef.current = false; }, 2000);
   }
 
   function handleExample(topic) {
-    setQuery(topic);
+    if (submittingRef.current || isSearching) return;
+    submittingRef.current = true;
     research.startSearch(topic);
     router.push("/processing");
+    setTimeout(() => { submittingRef.current = false; }, 2000);
   }
 
   return (
@@ -86,10 +93,10 @@ export default function SearchPage() {
 
         <button
           type="submit"
-          disabled={!isValid}
+          disabled={!isValid || isSearching}
           className="w-full mt-3 py-3 rounded-md bg-[var(--accent)] text-[var(--bg)] font-medium tracking-wide disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity"
         >
-          RESEARCH COPILOT
+          {isSearching ? "Searching…" : "RESEARCH COPILOT"}
         </button>
       </form>
 

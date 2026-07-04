@@ -49,7 +49,7 @@ _conn: sqlite3.Connection | None = None
 # Default TTLs (hours) — override via environment variables
 PAPER_TEXT_TTL_HOURS = int(os.environ.get("PAPER_TEXT_TTL_HOURS", 168))        # 7 days
 PAPER_EXTRACTION_TTL_HOURS = int(os.environ.get("EXTRACTION_TTL_HOURS", 168)) # 7 days
-GRAPH_TTL_HOURS = int(os.environ.get("GRAPH_TTL_HOURS", 24))                  # 1 day
+GRAPH_TTL_HOURS = int(os.environ.get("GRAPH_TTL_HOURS", 72))                  # 3 days (was 24h)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +139,76 @@ def close() -> None:
             logger.warning("[cache] Error closing SQLite: %s", e)
         finally:
             _conn = None
+
+
+# ---------------------------------------------------------------------------
+# Bulk pruner — removes ALL expired rows across all tables in one pass.
+# Call on startup and/or schedule periodically.
+# ---------------------------------------------------------------------------
+
+def prune_expired_entries() -> dict:
+    """
+    Delete all entries that have exceeded their TTL from every table.
+    Returns counts of deleted rows per table for observability.
+    """
+    now = datetime.utcnow()
+    deleted = {}
+    specs = [
+        ("paper_texts",       "arxiv_id",   PAPER_TEXT_TTL_HOURS),
+        ("paper_extractions", "arxiv_id",   PAPER_EXTRACTION_TTL_HOURS),
+        ("graph_cache",       "query_hash", GRAPH_TTL_HOURS),
+    ]
+    with _lock:
+        conn = _get_conn()
+        for table, _, ttl in specs:
+            cutoff = (now - timedelta(hours=ttl)).isoformat()
+            cur = conn.execute(
+                f"DELETE FROM {table} WHERE created_at < ?",  # noqa: S608
+                (cutoff,)
+            )
+            deleted[table] = cur.rowcount
+        conn.commit()
+    total = sum(deleted.values())
+    if total:
+        logger.info("[cache] Pruned %d expired entries: %s", total, deleted)
+    return deleted
+
+
+def cache_stats() -> dict:
+    """Return row counts and oldest/newest entry per table for health checks."""
+    conn = _get_conn()
+    stats = {}
+    for table in ("paper_texts", "paper_extractions", "graph_cache"):
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) as cnt, MIN(created_at) as oldest, MAX(created_at) as newest FROM {table}"  # noqa: S608
+            ).fetchone()
+            stats[table] = {
+                "count": row["cnt"],
+                "oldest": row["oldest"],
+                "newest": row["newest"],
+            }
+        except Exception as e:
+            stats[table] = {"error": str(e)}
+    return stats
+
+
+def start_background_pruner(interval_hours: int = 6) -> None:
+    """Start a daemon thread that prunes expired cache entries every N hours."""
+    import threading
+
+    def _loop():
+        import time as _time
+        while True:
+            _time.sleep(interval_hours * 3600)
+            try:
+                prune_expired_entries()
+            except Exception as e:
+                logger.warning("[cache] Background pruner error: %s", e)
+
+    t = threading.Thread(target=_loop, daemon=True, name="cache-pruner")
+    t.start()
+    logger.info("[cache] Background pruner started (interval=%dh)", interval_hours)
 
 
 # ---------------------------------------------------------------------------
