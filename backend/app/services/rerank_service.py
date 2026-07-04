@@ -7,8 +7,14 @@ so it judges relevance more accurately than comparing two separate
 embedding vectors. It's slower per-pair, but we're only scoring ~20
 abstracts, so it's still fast (runs fine on CPU, no GPU needed).
 
-Model is small (~100MB) and downloads once on first run.
 """
+import os
+# Prevent OpenBLAS and PyTorch from allocating too many threads and crashing 
+# with hard C-level memory errors on low-memory systems.
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
 import logging
 from app.models.schemas import PaperCandidate
 

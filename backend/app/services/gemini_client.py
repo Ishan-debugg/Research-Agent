@@ -89,6 +89,17 @@ def _call_model_sync(model_name: str, prompt: str, temperature: float,
                      top_p: float, top_k: int, max_output_tokens: int) -> str:
     """Make a single synchronous Gemini call and return the text response."""
     model = genai.GenerativeModel(model_name)
+    
+    # Relax safety settings to BLOCK_NONE so academic/scientific text
+    # (e.g. papers studying toxicity, jailbreaks, red-teaming, or medical risks)
+    # does not trigger safety block false positives and crash the pipeline.
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+
     response = model.generate_content(
         prompt,
         generation_config={
@@ -98,6 +109,7 @@ def _call_model_sync(model_name: str, prompt: str, temperature: float,
             "top_k": top_k,
             "max_output_tokens": max_output_tokens,
         },
+        safety_settings=safety_settings,
         request_options={"timeout": 90},
     )
     return response.text
