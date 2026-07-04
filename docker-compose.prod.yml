@@ -1,0 +1,51 @@
+# ── Production Docker Compose ────────────────────────────────────────────────
+# Usage:
+#   docker compose -f docker-compose.prod.yml up --build -d
+#
+# Prerequisites:
+#   1. Create backend/.env.prod with your production secrets (GEMINI_API_KEY, API_AUTH_KEY)
+#   2. Set NEXT_PUBLIC_API_URL to your production API domain
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    restart: unless-stopped
+    # Read-only filesystem — only /app/cache is writable (for SQLite)
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - backend-cache:/app/cache
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+
+volumes:
+  backend-cache:
+    driver: local

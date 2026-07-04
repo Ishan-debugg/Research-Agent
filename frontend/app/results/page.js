@@ -9,6 +9,7 @@ import BenchmarkExtracted from "../../components/BenchmarkExtracted";
 import PapersExplorer from "../../components/PapersExplorer";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
 
 /* ── Feature: Export helpers ── */
 function exportMarkdown(query, data) {
@@ -109,9 +110,12 @@ export default function ResultsPage() {
         }),
       };
 
+      const fetchHeaders = { "Content-Type": "application/json" };
+      if (API_KEY) fetchHeaders["X-API-Key"] = API_KEY;
+
       fetch(API_URL + "/tech-match", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: fetchHeaders,
         body: JSON.stringify(payload),
       })
         .then(function (res) {

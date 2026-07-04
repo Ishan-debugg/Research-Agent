@@ -107,6 +107,12 @@ def _is_expired(created_at_iso: str, ttl_hours: int) -> bool:
 
 def _purge_expired(table: str, key_col: str, key_val: str) -> None:
     """Lazily delete an expired entry (best-effort, non-blocking)."""
+    # Allowlist to prevent SQL injection via table/column names
+    _VALID_TABLES = {"paper_texts", "paper_extractions", "graph_cache"}
+    _VALID_COLS = {"arxiv_id", "query_hash"}
+    if table not in _VALID_TABLES or key_col not in _VALID_COLS:
+        logger.error("[cache] Invalid table/column in purge: %s/%s", table, key_col)
+        return
     try:
         with _lock:
             _get_conn().execute(

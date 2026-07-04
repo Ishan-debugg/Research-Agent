@@ -6,6 +6,7 @@ import { saveHistoryEntry } from "../lib/historyStore";
 const ResearchContext = createContext(null);
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
 
 export function ResearchProvider({ children }) {
   const [query, setQuery]   = useState("");
@@ -40,9 +41,12 @@ export function ResearchProvider({ children }) {
 
     try {
       // Use /search/stream to get real-time SSE progress
+      const fetchHeaders = {};
+      if (API_KEY) fetchHeaders["X-API-Key"] = API_KEY;
+
       const res = await fetch(
         API_URL + "/search/stream?query=" + encodeURIComponent(q),
-        { signal: controller.signal }
+        { signal: controller.signal, headers: fetchHeaders }
       );
 
       // Surface clean HTTP errors immediately (429, 422, 504, etc.)

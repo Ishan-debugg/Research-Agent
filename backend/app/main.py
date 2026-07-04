@@ -55,8 +55,14 @@ from app.services import cache_service
 
 load_dotenv()
 
-# Configure Gemini globally on startup
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+# Configure Gemini globally on startup — fail fast with a clear error
+_gemini_key = os.environ.get("GEMINI_API_KEY")
+if not _gemini_key:
+    raise RuntimeError(
+        "GEMINI_API_KEY environment variable is required. "
+        "Set it in backend/.env or pass it via docker-compose env_file."
+    )
+genai.configure(api_key=_gemini_key)
 
 # ---------------------------------------------------------------------------
 # Logging — structured output visible in uvicorn terminal
@@ -112,7 +118,7 @@ app.add_middleware(
 )
 
 # --- GZip Compression (for responses > 500 bytes) ---
-# app.add_middleware(GZipMiddleware, minimum_size=500)
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # --- Prometheus Metrics ---
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
@@ -134,6 +140,23 @@ app.add_middleware(RequestIDMiddleware)
 
 
 # ---------------------------------------------------------------------------
+# Security Headers Middleware — defence-in-depth for production
+# ---------------------------------------------------------------------------
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ---------------------------------------------------------------------------
 # Optional API-Key Authentication Middleware
 # Set API_AUTH_KEY in .env to enable; leave unset to skip auth.
 # ---------------------------------------------------------------------------
@@ -143,7 +166,8 @@ API_AUTH_KEY = os.environ.get("API_AUTH_KEY", "")
 class APIKeyMiddleware(BaseHTTPMiddleware):
     """Require X-API-Key header if API_AUTH_KEY is configured."""
 
-    EXEMPT_PATHS = {"/health", "/docs", "/redoc", "/openapi.json", "/metrics"}
+    # /metrics intentionally NOT exempt — requires API key to prevent info leakage
+    EXEMPT_PATHS = {"/health", "/docs", "/redoc", "/openapi.json"}
 
     async def dispatch(self, request: Request, call_next):
         if not API_AUTH_KEY:

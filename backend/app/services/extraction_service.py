@@ -33,17 +33,14 @@ Few-shot structure (modular — add/remove examples by editing FEW_SHOT_EXAMPLES
 import asyncio
 import json
 import logging
-import os
 
 import google.generativeai as genai
-from dotenv import load_dotenv
 
 from app.models.schemas import ExtractedPaper
 from app.services import cache_service
 from app.services import gemini_client
 
-load_dotenv()
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+# Gemini is configured once in main.py — no need to call genai.configure() again
 
 # Keep MODEL_NAME exported for backward-compat (techmatch_service imports it)
 MODEL_NAME = gemini_client.MODEL_NAME

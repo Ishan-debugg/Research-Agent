@@ -61,7 +61,7 @@ _TASK_CONFIG: dict[str, dict] = {
         "temperature":      0.0,
         "top_p":            1.0,     # No nucleus sampling at T=0 (greedy)
         "top_k":            1,       # Greedy decoding — single most likely token
-        "max_output_tokens": 4096,   # Extraction JSON for 5 papers ≈ 3-4k tokens
+        "max_output_tokens": 8192,   # Extraction JSON for 5 papers can be large
     },
     "synthesis": {
         "primary":          SYNTHESIS_MODEL,
@@ -70,7 +70,7 @@ _TASK_CONFIG: dict[str, dict] = {
         "temperature":      0.2,
         "top_p":            0.9,     # Tighter nucleus sampling
         "top_k":            40,      # Standard diverse decoding
-        "max_output_tokens": 4096,   # Graph JSON is typically ~1-3k tokens
+        "max_output_tokens": 8192,   # Graph JSON is typically ~1-3k tokens
     },
 }
 
@@ -206,8 +206,9 @@ def sanitize_json(raw: str) -> str:
     Clean common Gemini JSON output issues so json.loads() succeeds:
       1. Strip UTF-8 BOM
       2. Remove markdown code fences (```json ... ```)
-      3. Remove trailing commas before } or ]
-      4. Strip leading/trailing whitespace
+      3. Extract only the JSON block if there's conversational preamble/postamble
+      4. Remove trailing commas before } or ]
+      5. Strip leading/trailing whitespace
     """
     s = raw.strip()
 
@@ -218,6 +219,11 @@ def sanitize_json(raw: str) -> str:
     # Strip markdown fences: ```json ... ``` or ``` ... ```
     s = _re.sub(r"^```(?:json)?\s*\n?", "", s, flags=_re.IGNORECASE)
     s = _re.sub(r"\n?```\s*$", "", s)
+
+    # Forcefully extract the JSON block: from the first [ or { to the last ] or }
+    match = _re.search(r"(\[.*\]|\{.*\})", s, _re.DOTALL)
+    if match:
+        s = match.group(1)
 
     # Remove trailing commas before closing braces/brackets
     # e.g.  {"a": 1,}  →  {"a": 1}

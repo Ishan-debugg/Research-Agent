@@ -22,8 +22,13 @@ COPY --from=builder /install /usr/local
 
 COPY . .
 
-# Create cache directory
-RUN mkdir -p /app/cache
+# Create non-root user and cache directory
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser \
+    && mkdir -p /app/cache \
+    && chown -R appuser:appuser /app
+
+# Drop root privileges
+USER appuser
 
 EXPOSE 8000
 

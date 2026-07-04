@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.env*
+.git/
+.gitignore
+*.md
+.DS_Store
+Thumbs.db
+.vscode/
+coverage/
