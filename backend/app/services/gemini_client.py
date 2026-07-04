@@ -193,3 +193,34 @@ class _null_context:
         return self
     async def __aexit__(self, *args):
         pass
+
+
+# ---------------------------------------------------------------------------
+# JSON sanitisation — Gemini sometimes returns almost-valid JSON with
+# trailing commas, markdown fences, or BOM characters.
+# ---------------------------------------------------------------------------
+import re as _re
+
+def sanitize_json(raw: str) -> str:
+    """
+    Clean common Gemini JSON output issues so json.loads() succeeds:
+      1. Strip UTF-8 BOM
+      2. Remove markdown code fences (```json ... ```)
+      3. Remove trailing commas before } or ]
+      4. Strip leading/trailing whitespace
+    """
+    s = raw.strip()
+
+    # Remove UTF-8 BOM
+    if s.startswith("\ufeff"):
+        s = s[1:]
+
+    # Strip markdown fences: ```json ... ``` or ``` ... ```
+    s = _re.sub(r"^```(?:json)?\s*\n?", "", s, flags=_re.IGNORECASE)
+    s = _re.sub(r"\n?```\s*$", "", s)
+
+    # Remove trailing commas before closing braces/brackets
+    # e.g.  {"a": 1,}  →  {"a": 1}
+    s = _re.sub(r",\s*([}\]])", r"\1", s)
+
+    return s.strip()

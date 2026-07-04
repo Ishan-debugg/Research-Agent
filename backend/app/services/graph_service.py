@@ -86,7 +86,18 @@ async def build_knowledge_graph(papers: list[ExtractedPaper]) -> KnowledgeGraph:
 
     raw = await gemini_client.call_gemini("synthesis", prompt, semaphore=None)
 
-    data = json.loads(raw)
+    try:
+        data = json.loads(gemini_client.sanitize_json(raw))
+    except json.JSONDecodeError as e:
+        logger.error("[graph] JSON parse error: %s\nRaw: %.500s", e, raw)
+        # Return a minimal valid graph so the pipeline doesn't crash
+        data = {
+            "nodes": [{"id": p.arxiv_id, "label": p.title[:60], "type": "paper"} for p in papers],
+            "edges": [],
+            "open_problems": [],
+            "summary": "Graph synthesis produced invalid JSON; showing papers without relationships.",
+        }
+
     graph = KnowledgeGraph(**data)
 
     # --- Persist to cache ---

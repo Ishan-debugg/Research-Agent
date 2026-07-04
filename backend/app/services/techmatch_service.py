@@ -64,4 +64,8 @@ async def match_tech_stack(papers, tech_stack):
         papers_block=_build_papers_block(papers),
     )
     raw = await gemini_client.call_gemini("extraction", prompt, semaphore=None)
-    return json.loads(raw)
+    try:
+        return json.loads(gemini_client.sanitize_json(raw))
+    except json.JSONDecodeError as e:
+        logger.error("[techmatch] JSON parse error: %s\nRaw: %.500s", e, raw)
+        return {"matches": {}}

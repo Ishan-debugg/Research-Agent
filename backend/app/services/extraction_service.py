@@ -279,7 +279,7 @@ async def extract_papers(
         return results, errors
 
     try:
-        data = json.loads(raw)
+        data = json.loads(gemini_client.sanitize_json(raw))
     except json.JSONDecodeError as e:
         logger.error("[extraction] JSON parse error: %s\nRaw: %.300s", e, raw)
         for p in uncached_papers:
