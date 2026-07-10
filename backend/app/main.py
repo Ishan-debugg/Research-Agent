@@ -507,6 +507,41 @@ async def search_stream(request: Request, query: str):
     async def _event_stream():
         t0 = time.perf_counter()
 
+        # ── Fast path: query cache hit ──────────────────────────────────────
+        # If we've seen this exact query before, serve all 5 stages + result
+        # instantly from the in-memory cache so the user sees real-time events
+        # without paying any API cost or network latency.
+        cache_key = query.strip().lower()
+        cached = _cache_get(cache_key)
+        if cached:
+            logger.info("[stream] QUERY CACHE HIT — '%s'", query)
+            cached_response = SearchResponse(**cached)
+            cached_response.request_id = request_id
+            # Emit all stages as instantly-completed (elapsed=0) so the UI
+            # animates through them, then deliver the result.
+            stages_meta = [
+                ("retrieving", "retrieved",    1, "arXiv results (cached)"),
+                ("reranking",  "reranked",     2, "Reranking (cached)"),
+                ("downloading","downloaded",   3, "Paper text (cached)"),
+                ("extracting", "extracted",    4, "Extraction (cached)"),
+                ("synthesizing","synthesized", 5, "Graph (cached)"),
+            ]
+            for start_stage, done_stage, progress, msg in stages_meta:
+                yield _sse_event("stage", {
+                    "stage": start_stage, "progress": progress, "total": 5,
+                    "message": msg,
+                })
+                yield _sse_event("stage", {
+                    "stage": done_stage, "progress": progress, "total": 5,
+                    "message": msg, "elapsed": 0,
+                })
+            yield _sse_event("result", {
+                "data": cached_response.dict(),
+                "total_elapsed": round(time.perf_counter() - t0, 2),
+                "from_cache": True,
+            })
+            return
+
         async def _run_with_timeout(coro, stage_name: str):
             """Run a pipeline coroutine with a hard timeout."""
             try:
@@ -550,10 +585,10 @@ async def search_stream(request: Request, query: str):
                 "elapsed": round(time.perf_counter() - t1, 1),
             })
 
-            # --- Stage 3: PDF ---
+            # --- Stage 3: Paper text ---
             yield _sse_event("stage", {
                 "stage": "downloading", "progress": 3, "total": 5,
-                "message": "Downloading and parsing PDFs...",
+                "message": "Fetching paper text (abstract / PDF)...",
             })
 
             t2 = time.perf_counter()
@@ -563,7 +598,7 @@ async def search_stream(request: Request, query: str):
 
             yield _sse_event("stage", {
                 "stage": "downloaded", "progress": 3, "total": 5,
-                "message": f"Extracted text from {len(texts)} papers.",
+                "message": f"Got text for {len(texts)} papers.",
                 "elapsed": round(time.perf_counter() - t2, 1),
             })
 
