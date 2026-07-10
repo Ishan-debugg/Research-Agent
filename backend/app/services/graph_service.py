@@ -1,25 +1,20 @@
 """
-Stage 5: Knowledge graph synthesis via Gemini (synthesis tier model).
+Stage 5: Knowledge graph synthesis via Gemini.
 
-Key improvements over the original:
-  1. SQLITE CACHE — The graph is cached by a SHA-256 hash of the sorted
-     set of arxiv_ids being synthesised. If the same set of papers was
-     graphed before, the Gemini call is skipped entirely.
-
-  2. SYNTHESIS MODEL — Routed to the higher-capability SYNTHESIS_MODEL
-     (default: gemini-2.5-flash) via gemini_client, with temperature=0.2
-     to allow creative cross-paper relationship identification.
-
-  3. ASYNC — build_knowledge_graph() is now async so the main pipeline
-     can await it without blocking the event loop.
+Changes:
+  - build_knowledge_graph now accepts a semaphore so Stage 5 respects the
+    global concurrency cap (it was previously passing semaphore=None).
+  - Synthesis routed to EXTRACTION_MODEL (flash-lite) instead of the slower
+    flash model — graph JSON is ~2-3k tokens, flash-lite handles it fine.
+    This alone should cut Stage 5 from ~32s to ~8-12s.
+  - max_output_tokens for synthesis reduced to 4096 (graph JSON never exceeds
+    ~3k tokens; 8192 was causing the model to over-generate).
 """
 
 import asyncio
 import hashlib
 import json
 import logging
-
-import google.generativeai as genai
 
 from app.models.schemas import ExtractedPaper, KnowledgeGraph
 from app.services import cache_service
@@ -58,39 +53,38 @@ def _build_summaries_block(papers: list[ExtractedPaper]) -> str:
 
 
 def _make_query_hash(papers: list[ExtractedPaper]) -> str:
-    """Stable hash of the sorted arxiv_id set — used as the graph cache key."""
     ids = sorted(p.arxiv_id for p in papers)
     return hashlib.sha256("|".join(ids).encode()).hexdigest()
 
 
-async def build_knowledge_graph(papers: list[ExtractedPaper]) -> KnowledgeGraph:
+async def build_knowledge_graph(
+    papers: list[ExtractedPaper],
+    semaphore: asyncio.Semaphore | None = None,
+) -> KnowledgeGraph:
     """
     Async graph synthesis with SQLite caching.
-
-    If the exact same set of papers was graphed before, returns the cached
-    KnowledgeGraph immediately without a Gemini call.
+    Now accepts semaphore so it respects global Gemini concurrency cap.
     """
     query_hash = _make_query_hash(papers)
 
-    # --- Cache check ---
     cached = cache_service.get_graph(query_hash)
     if cached:
         logger.info("[graph] Served from cache (hash=%s)", query_hash[:12])
         return KnowledgeGraph(**cached)
 
-    # --- Gemini synthesis (routes to SYNTHESIS_MODEL) ---
     prompt = GRAPH_PROMPT.format(
         count=len(papers),
         summaries_block=_build_summaries_block(papers),
     )
 
-    raw = await gemini_client.call_gemini("synthesis", prompt, semaphore=None)
+    # Route to "synthesis" task type but override to use flash-lite speed.
+    # Graph JSON is structured and small (~2-3k tokens) — flash-lite is sufficient.
+    raw = await gemini_client.call_gemini("extraction", prompt, semaphore=semaphore)
 
     try:
         data = json.loads(gemini_client.sanitize_json(raw))
     except json.JSONDecodeError as e:
         logger.error("[graph] JSON parse error: %s\nRaw: %.500s", e, raw)
-        # Return a minimal valid graph so the pipeline doesn't crash
         data = {
             "nodes": [{"id": p.arxiv_id, "label": p.title[:60], "type": "paper"} for p in papers],
             "edges": [],
@@ -99,8 +93,5 @@ async def build_knowledge_graph(papers: list[ExtractedPaper]) -> KnowledgeGraph:
         }
 
     graph = KnowledgeGraph(**data)
-
-    # --- Persist to cache ---
     cache_service.set_graph(query_hash, data)
-
     return graph

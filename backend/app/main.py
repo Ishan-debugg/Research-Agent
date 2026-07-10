@@ -293,7 +293,7 @@ async def _run_pipeline(query: str, request_id: str = ""):
     t0 = time.perf_counter()
 
     # --- Stage 1: Retrieve candidates from arXiv ---
-    candidates = search_arxiv(query, max_results=ARXIV_CANDIDATE_COUNT)
+    candidates = await search_arxiv(query, max_results=ARXIV_CANDIDATE_COUNT)
     logger.info(
         "[stage 1: retrieve]   %.1fs  (%d papers)",
         time.perf_counter() - t0, len(candidates),
@@ -303,7 +303,7 @@ async def _run_pipeline(query: str, request_id: str = ""):
 
     # --- Stage 2: Semantic rerank ---
     t1 = time.perf_counter()
-    top_papers = rerank_papers(query, candidates, top_k=TOP_K_PAPERS)
+    top_papers = await rerank_papers(query, candidates, top_k=TOP_K_PAPERS)
     logger.info(
         "[stage 2: rerank]     %.1fs",
         time.perf_counter() - t1,
@@ -329,7 +329,7 @@ async def _run_pipeline(query: str, request_id: str = ""):
 
     # --- Stage 5: Knowledge graph synthesis (cache-aware) ---
     t4 = time.perf_counter()
-    graph = await build_knowledge_graph(extracted)
+    graph = await build_knowledge_graph(extracted, semaphore=_gemini_semaphore)
     logger.info(
         "[stage 5: synthesize] %.1fs",
         time.perf_counter() - t4,
@@ -484,7 +484,7 @@ async def search_stream(request: Request, query: str):
                 "message": f"Searching arXiv for '{query}'...",
             })
 
-            candidates = search_arxiv(query, max_results=ARXIV_CANDIDATE_COUNT)
+            candidates = await search_arxiv(query, max_results=ARXIV_CANDIDATE_COUNT)
             if not candidates:
                 yield _sse_event("error", {"message": "No papers found for this query"})
                 return
@@ -502,7 +502,7 @@ async def search_stream(request: Request, query: str):
             })
 
             t1 = time.perf_counter()
-            top_papers = rerank_papers(query, candidates, top_k=TOP_K_PAPERS)
+            top_papers = await rerank_papers(query, candidates, top_k=TOP_K_PAPERS)
 
             yield _sse_event("stage", {
                 "stage": "reranked", "progress": 2, "total": 5,
@@ -550,7 +550,7 @@ async def search_stream(request: Request, query: str):
             })
 
             t4 = time.perf_counter()
-            graph = await build_knowledge_graph(extracted)
+            graph = await build_knowledge_graph(extracted, semaphore=_gemini_semaphore)
 
             yield _sse_event("stage", {
                 "stage": "synthesized", "progress": 5, "total": 5,
