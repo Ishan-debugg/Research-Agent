@@ -3,8 +3,8 @@ gemini_client.py — Central Gemini model router with fallback and concurrency c
 
 Architecture:
   Two model tiers are configured via environment variables:
-    EXTRACTION_MODEL  (default: gemini-2.5-flash-lite)  — cheap, fast, deterministic
-    SYNTHESIS_MODEL   (default: gemini-2.5-flash)        — smarter, for graph/summary
+    EXTRACTION_MODEL  (default: gemini-2.5-flash)  — strong reading comprehension for dense academic text
+    SYNTHESIS_MODEL   (default: gemini-2.5-pro)     — best available reasoning for graph/summary
 
   Task routing:
     "extraction" → EXTRACTION_MODEL  (temperature=0.0, top_k=1, top_p=1.0)
@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 # Model configuration — change models here or via .env without touching callers
 # ---------------------------------------------------------------------------
 
-EXTRACTION_MODEL = os.environ.get("EXTRACTION_MODEL", "gemini-2.5-flash-lite")
-SYNTHESIS_MODEL  = os.environ.get("SYNTHESIS_MODEL",  "gemini-2.5-flash")
+EXTRACTION_MODEL = os.environ.get("EXTRACTION_MODEL", "gemini-2.5-flash")
+SYNTHESIS_MODEL  = os.environ.get("SYNTHESIS_MODEL",  "gemini-2.5-pro")
 
 # Kept for backward-compat with techmatch_service which imported MODEL_NAME
 MODEL_NAME = EXTRACTION_MODEL
@@ -61,7 +61,10 @@ _TASK_CONFIG: dict[str, dict] = {
         "temperature":      0.0,
         "top_p":            1.0,     # No nucleus sampling at T=0 (greedy)
         "top_k":            1,       # Greedy decoding — single most likely token
-        "max_output_tokens": 8192,   # Extraction JSON for 5 papers can be large
+        # 4096 is ample for a 5-paper batch (each field is a sentence; total ~2-3k tokens).
+        # Gemini charges generation latency against max_output_tokens even when the actual
+        # output is shorter — smaller cap = faster wall-clock time.
+        "max_output_tokens": 4096,
     },
     "synthesis": {
         "primary":          SYNTHESIS_MODEL,
@@ -70,7 +73,9 @@ _TASK_CONFIG: dict[str, dict] = {
         "temperature":      0.2,
         "top_p":            0.9,     # Tighter nucleus sampling
         "top_k":            40,      # Standard diverse decoding
-        "max_output_tokens": 8192,   # Graph JSON is typically ~1-3k tokens
+        # Graph JSON is ~1-3k tokens; 3000 gives comfortable headroom without the
+        # latency penalty of the original 8192.
+        "max_output_tokens": 3000,
     },
 }
 
@@ -110,7 +115,7 @@ def _call_model_sync(model_name: str, prompt: str, temperature: float,
             "max_output_tokens": max_output_tokens,
         },
         safety_settings=safety_settings,
-        request_options={"timeout": 90},
+        request_options={"timeout": 60},
     )
 
     # Guard: an empty response means the model was blocked or returned nothing.

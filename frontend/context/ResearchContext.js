@@ -19,10 +19,35 @@ export function ResearchProvider({ children }) {
   const [liveMessage, setLiveMessage] = useState("");     // human-readable message
   const [liveProgress, setLiveProgress] = useState(0);   // 1-5
   const [liveElapsed, setLiveElapsed]   = useState(null); // seconds for last stage
+  const [fromCache, setFromCache]       = useState(false); // true when result served from cache
+
+  // Real-time latency tracking
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);   // live wall-clock stopwatch, ticks while loading
+  const [totalElapsed, setTotalElapsed]     = useState(null); // final backend-reported total pipeline time (from `result` event)
 
   // Allow abort of in-flight SSE stream
   const abortRef = useRef(null);
   const watchdogRef = useRef(null); // timeout handle for SSE stall detection
+  const startTimeRef = useRef(null); // Date.now() when the current search began
+  const tickRef = useRef(null);      // setInterval handle driving the live stopwatch
+
+  // Start a real-time stopwatch ticking from "now" — this is what lets the
+  // frontend show actual, continuous latency instead of only per-stage snapshots.
+  function _startTicking() {
+    startTimeRef.current = Date.now();
+    setElapsedSeconds(0);
+    if (tickRef.current) clearInterval(tickRef.current);
+    tickRef.current = setInterval(function () {
+      setElapsedSeconds((Date.now() - startTimeRef.current) / 1000);
+    }, 100);
+  }
+
+  function _stopTicking() {
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+  }
 
   // Reset the 90-second watchdog timer. Called every time an SSE event arrives.
   function _resetWatchdog(reject) {
@@ -50,6 +75,9 @@ export function ResearchProvider({ children }) {
     setLiveMessage("");
     setLiveProgress(0);
     setLiveElapsed(null);
+    setTotalElapsed(null);
+    setFromCache(false);
+    _startTicking();
 
     // Inner function: connect to SSE and read until done.
     // Returns true if complete, false if we should reconnect once.
@@ -109,6 +137,9 @@ export function ResearchProvider({ children }) {
                       const json = eventData.data;
                       setData(json);
                       setStatus("done");
+                      if (eventData.total_elapsed != null) setTotalElapsed(eventData.total_elapsed);
+                      if (eventData.from_cache) setFromCache(true);
+                      _stopTicking();
                       receivedResult = true;
                       saveHistoryEntry({
                         id: Date.now().toString(),
@@ -116,6 +147,7 @@ export function ResearchProvider({ children }) {
                         date: new Date().toISOString(),
                         summary: json.graph?.summary || "",
                         data: json,
+                        total_elapsed: eventData.total_elapsed != null ? eventData.total_elapsed : null,
                       });
                     } else if (eventType === "error") {
                       reject(new Error(eventData.message || "Pipeline error"));
@@ -148,6 +180,7 @@ export function ResearchProvider({ children }) {
         await _consumeStream(true);
       }
     } catch (err) {
+      _stopTicking();
       if (err.name === "AbortError") return;
       setError(err.message || "Something went wrong");
       setStatus("error");
@@ -155,6 +188,7 @@ export function ResearchProvider({ children }) {
   }, []);
 
   const loadFromHistory = useCallback(function (entry) {
+    _stopTicking();
     setQuery(entry.query);
     setData(entry.data);
     setStatus("done");
@@ -162,10 +196,12 @@ export function ResearchProvider({ children }) {
     setLiveStage(null);
     setLiveMessage("");
     setLiveProgress(0);
+    setTotalElapsed(entry.total_elapsed != null ? entry.total_elapsed : null);
   }, []);
 
   const reset = useCallback(function () {
     if (abortRef.current) abortRef.current.abort();
+    _stopTicking();
     setStatus("idle");
     setData(null);
     setError(null);
@@ -174,6 +210,9 @@ export function ResearchProvider({ children }) {
     setLiveMessage("");
     setLiveProgress(0);
     setLiveElapsed(null);
+    setElapsedSeconds(0);
+    setTotalElapsed(null);
+    setFromCache(false);
   }, []);
 
   const value = {
@@ -185,6 +224,9 @@ export function ResearchProvider({ children }) {
     liveMessage,
     liveProgress,
     liveElapsed,
+    elapsedSeconds,
+    totalElapsed,
+    fromCache,
     startSearch,
     loadFromHistory,
     reset,
