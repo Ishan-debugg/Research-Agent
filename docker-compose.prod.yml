@@ -3,15 +3,42 @@
 #   docker compose -f docker-compose.prod.yml up --build -d
 #
 # Prerequisites:
-#   1. Create backend/.env.prod with your production secrets (GEMINI_API_KEY, API_AUTH_KEY)
-#   2. Set NEXT_PUBLIC_API_URL to your production API domain
+#   1. Create backend/.env with your production secrets (GEMINI_API_KEY, API_AUTH_KEY)
+#   2. Set NEXT_PUBLIC_API_URL to point to /api (Nginx rewrites the prefix)
+#   3. Install Docker Desktop or Docker Engine with Compose v2
+#
+# Services exposed to the host:
+#   :80 → Nginx (public entry point for both frontend and API)
+#   Internal ports :8000 and :3000 are NOT exposed directly.
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
+
+  # ── Nginx reverse proxy (public entry point) ─────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── FastAPI backend ───────────────────────────────────────────────────────────
   backend:
     build: ./backend
-    ports:
-      - "8000:8000"
+    # Internal only — not exposed to host; Nginx routes /api/* to this
+    expose:
+      - "8000"
     env_file:
       - ./backend/.env
     restart: unless-stopped
@@ -26,25 +53,54 @@ services:
         limits:
           memory: 2G
           cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
 
+  # ── Next.js frontend ─────────────────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-    ports:
-      - "3000:3000"
+        # Point to /api so Nginx routes to the backend internally
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost/api}
+    # Internal only — not exposed to host; Nginx routes / to this
+    expose:
+      - "3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
     read_only: true
     tmpfs:
       - /tmp
+      - /app/.next/cache
     deploy:
       resources:
         limits:
           memory: 512M
           cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "node", "-e",
+             "require('http').get('http://localhost:3000/', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   backend-cache:

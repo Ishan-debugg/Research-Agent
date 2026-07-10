@@ -31,7 +31,7 @@ async def main():
     prompt = "Create a knowledge graph..." # not the real prompt, let's just call the service and see what it does
     
     # The real prompt is in graph_service.py
-    graph = await build_knowledge_graph("test_hash", "Instruction Tuning", papers, extracted)
+    graph = await build_knowledge_graph(extracted)
     
     print(json.dumps(graph.dict(), indent=2))
     

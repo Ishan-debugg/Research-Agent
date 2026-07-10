@@ -12,6 +12,8 @@ from app.models.schemas import PaperCandidate
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 # Module-level client singleton — avoids re-creating on every request
 _client = arxiv.Client()
 

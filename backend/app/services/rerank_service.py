@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _model = None
 _model_failed = False
+_model_failed = False
 
 
 def _get_model():
@@ -52,8 +53,8 @@ def _sync_rerank(
     pairs = [(query, c.abstract) for c in candidates]
     scores = model.predict(pairs)
 
-    for candidate, score in zip(candidates, scores):
-        candidate.score = float(score)
+        for candidate, score in zip(candidates, scores):
+            candidate.score = float(score)
 
     return sorted(candidates, key=lambda c: c.score, reverse=True)[:top_k]
 

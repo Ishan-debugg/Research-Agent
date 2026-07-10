@@ -52,6 +52,7 @@ from app.services.extraction_service import extract_papers
 from app.services.graph_service import build_knowledge_graph
 from app.services.techmatch_service import match_tech_stack
 from app.services import cache_service
+from app.services.cache_service import cache_stats, start_background_pruner
 
 load_dotenv()
 
@@ -119,6 +120,20 @@ app.add_middleware(
 
 # --- GZip Compression (for responses > 500 bytes) ---
 app.add_middleware(GZipMiddleware, minimum_size=500)
+
+# --- Request body size limit (1 MB max) ---
+# Prevents oversized payloads from reaching route handlers or crashing memory.
+@app.middleware("http")
+async def _limit_body_size(request: Request, call_next):
+    MAX_BODY = 1 * 1024 * 1024  # 1 MB
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_BODY:
+        return Response(
+            content=json.dumps({"detail": "Request body too large (max 1 MB)."}),
+            status_code=413,
+            media_type="application/json",
+        )
+    return await call_next(request)
 
 # --- Prometheus Metrics ---
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
@@ -211,6 +226,13 @@ async def _startup():
     logger.info("[startup] Preloading reranker model...")
     from app.services.rerank_service import _get_model
     _get_model()
+
+    # Start background cache pruner (prunes expired entries every 6 hours)
+    start_background_pruner(interval_hours=6)
+    # Do an immediate prune sweep on startup to clear stale entries from previous runs
+    from app.services.cache_service import prune_expired_entries
+    pruned = prune_expired_entries()
+    logger.info("[startup] Initial cache prune: %s", pruned)
 
     logger.info(
         "[startup] Gemini concurrency=%d | candidates=%d | top_k=%d | timeout=%ds",
@@ -393,7 +415,7 @@ async def _run_pipeline(query: str, request_id: str = ""):
 
 @app.get("/health")
 async def health():
-    """Deep health check — verifies DB, reranker, and Gemini connectivity."""
+    """Deep health check — verifies DB, reranker, Gemini connectivity, and cache stats."""
     checks = {}
 
     # Check SQLite cache
@@ -406,17 +428,25 @@ async def health():
         checks["database"] = False
         logger.warning("[health] DB check failed: %s", e)
 
-    # Check reranker model loaded
+    # Check reranker model loaded (also report if it failed to load and is running in fallback mode)
     try:
-        from app.services.rerank_service import _model
+        from app.services.rerank_service import _model, _model_failed
         checks["reranker_loaded"] = _model is not None
+        checks["reranker_fallback_mode"] = _model_failed
     except Exception:
         checks["reranker_loaded"] = False
+        checks["reranker_fallback_mode"] = True
 
     # Check Gemini semaphore exists
     checks["gemini_semaphore_ready"] = _gemini_semaphore is not None
 
-    overall = all(checks.values())
+    # Include cache row counts for observability
+    try:
+        checks["cache_stats"] = cache_stats()
+    except Exception as e:
+        checks["cache_stats"] = {"error": str(e)}
+
+    overall = checks["database"] and checks["gemini_semaphore_ready"]
     return {
         "status": "ok" if overall else "degraded",
         "checks": checks,
@@ -460,7 +490,7 @@ async def search(request: Request, query: str):  # noqa: C901
 
 
 @app.get("/search/stream")
-@limiter.limit("10/minute")
+@limiter.limit("3/minute")
 async def search_stream(request: Request, query: str):
     """
     SSE streaming endpoint — sends real-time stage progress events.
@@ -476,6 +506,15 @@ async def search_stream(request: Request, query: str):
 
     async def _event_stream():
         t0 = time.perf_counter()
+
+        async def _run_with_timeout(coro, stage_name: str):
+            """Run a pipeline coroutine with a hard timeout."""
+            try:
+                return await asyncio.wait_for(coro, timeout=PIPELINE_TIMEOUT)
+            except asyncio.TimeoutError:
+                raise asyncio.TimeoutError(
+                    f"Stage '{stage_name}' exceeded {PIPELINE_TIMEOUT}s timeout."
+                )
 
         try:
             # --- Stage 1: Retrieve ---
@@ -518,7 +557,9 @@ async def search_stream(request: Request, query: str):
             })
 
             t2 = time.perf_counter()
-            texts = await get_paper_texts(top_papers)
+            texts = await _run_with_timeout(
+                get_paper_texts(top_papers), "pdf-download"
+            )
 
             yield _sse_event("stage", {
                 "stage": "downloaded", "progress": 3, "total": 5,
@@ -533,8 +574,9 @@ async def search_stream(request: Request, query: str):
             })
 
             t3 = time.perf_counter()
-            extracted, extraction_errors = await extract_papers(
-                top_papers, texts, semaphore=_gemini_semaphore
+            extracted, extraction_errors = await _run_with_timeout(
+                extract_papers(top_papers, texts, semaphore=_gemini_semaphore),
+                "extraction",
             )
 
             yield _sse_event("stage", {
@@ -550,7 +592,7 @@ async def search_stream(request: Request, query: str):
             })
 
             t4 = time.perf_counter()
-            graph = await build_knowledge_graph(extracted, semaphore=_gemini_semaphore)
+            graph = await build_knowledge_graph(extracted)
 
             yield _sse_event("stage", {
                 "stage": "synthesized", "progress": 5, "total": 5,
@@ -612,6 +654,11 @@ async def search_stream(request: Request, query: str):
                 "total_elapsed": total_elapsed,
             })
 
+        except asyncio.TimeoutError as exc:
+            logger.error("[search/stream] Pipeline timeout: %s", exc)
+            yield _sse_event("error", {
+                "message": str(exc) or f"Pipeline timed out after {PIPELINE_TIMEOUT}s. Try a more specific query."
+            })
         except Exception as exc:
             logger.error(
                 "[search/stream] Pipeline error: %s", exc,
