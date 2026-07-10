@@ -1,33 +1,27 @@
 """
 Stage 4: Structured extraction via Gemini (extraction tier model).
 
-Key improvements over the original:
-  1. FEW-SHOT PROMPTING — 2 high-quality examples are injected into the prompt
-     before the actual papers, dramatically improving JSON schema adherence and
-     reducing hallucinated metric values.
+Key features:
+  1. FEW-SHOT PROMPTING — 2 high-quality examples in every prompt for schema
+     adherence and to prevent hallucinated metric values.
 
-  2. SQLITE CACHE — Each paper's extraction is cached by arxiv_id. On a cache
-     hit, the Gemini call is skipped entirely (0 tokens consumed).
+  2. SQLITE CACHE — Each paper's extraction is cached by arxiv_id. Cache hits
+     skip the Gemini call entirely (0 tokens consumed).
 
-  3. ASYNC + SEMAPHORE CONCURRENCY — extract_papers() is now async and accepts
-     an asyncio.Semaphore so the caller (main.py) can cap simultaneous Gemini
-     calls to GEMINI_CONCURRENCY (default: 5).
+  3. SMART BATCH + PER-PAPER FALLBACK:
+     a. All cache-miss papers are sent in ONE batched Gemini call (fast path).
+     b. Any paper Gemini omits from its response is retried in its OWN
+        individual call (robust fallback). This means 0 papers are silently
+        dropped — every paper either extracts or gets a clear error.
+     c. ID matching is fuzzy (strips version suffix) to handle Gemini returning
+        "2301.12345" when we sent "2301.12345v2".
 
-  4. DETERMINISTIC TEMPERATURE — extraction runs at temperature=0.0 via
-     gemini_client, eliminating hallucinated numeric values.
+  4. DETERMINISTIC TEMPERATURE — temperature=0.0, top_k=1 via gemini_client.
 
-  5. FULL TEXT — The brittle text[1500:10000] slice is removed. The full
-     extracted PDF text is sent; Gemini 2.5 models handle large contexts well,
-     and the cache prevents re-paying that token cost on repeated lookups.
+  5. TEXT CAPPED AT 8k chars/paper — covers abstract + intro + methods without
+     ballooning prompt size and slowing Gemini.
 
-  6. GRACEFUL DEGRADATION — Per-paper try/except ensures one bad paper doesn't
-     kill the entire batch. Failed papers are logged and skipped with an error
-     list returned alongside successful extractions.
-
-Few-shot structure (modular — add/remove examples by editing FEW_SHOT_EXAMPLES):
-  EXTRACTION_PROMPT_TEMPLATE
-    └── {examples}  ← rendered from FEW_SHOT_EXAMPLES list
-    └── {papers_block} ← actual papers to process
+  6. GRACEFUL DEGRADATION — per-paper try/except in the parse loop.
 """
 
 import asyncio
@@ -40,21 +34,16 @@ from app.models.schemas import ExtractedPaper
 from app.services import cache_service
 from app.services import gemini_client
 
-# Gemini is configured once in main.py — no need to call genai.configure() again
-
-# Keep MODEL_NAME exported for backward-compat (techmatch_service imports it)
 MODEL_NAME = gemini_client.MODEL_NAME
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Few-shot examples — each is (input_excerpt, output_json_string)
-# Add or remove examples here; extraction logic is unaffected.
+# Few-shot examples
 # ---------------------------------------------------------------------------
 
 FEW_SHOT_EXAMPLES = [
     (
-        # ---- Example 1: NLP / RAG paper ----
         """arxiv_id: 2005.11401
 title: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks
 text:
@@ -91,27 +80,26 @@ quality degrades for highly specialised domains not well covered by Wikipedia.""
 }"""
     ),
     (
-        # ---- Example 2: Computer Vision / classification paper ----
         """arxiv_id: 2010.11929
 title: An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale
 text:
-We split each image into fixed-size 16×16 patches and feed linear embeddings of
+We split each image into fixed-size 16x16 patches and feed linear embeddings of
 those patches as tokens to a standard Transformer encoder. Pre-training on
 JFT-300M (300M images, 18k classes) and fine-tuning on ImageNet-1k, our
 Vision Transformer (ViT-L/16) achieves 88.55% top-1 accuracy on ImageNet,
 surpassing the previous best CNN (EfficientNet-L2, 88.4%). Training cost is
 roughly 2.5k TPU-days. The model transfers well to CIFAR-10 (99.0%) and
 CIFAR-100 (94.6%). Limitation: ViT performs poorly without large-scale
-pre-training data — on ImageNet alone (without JFT) it underperforms ResNets.""",
+pre-training data.""",
         """{
   "arxiv_id": "2010.11929",
   "title": "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale",
-  "problem": "CNNs dominate image classification but Transformers, which excel in NLP, have not been applied directly to raw image patches at scale.",
-  "method": "Images are split into 16×16 non-overlapping patches; each patch is linearly embedded and fed as a token sequence to a standard Transformer encoder pretrained on large image datasets.",
-  "dataset": "JFT-300M (300M images, 18k classes) for pre-training; ImageNet-1k (~1.28M images, 1k classes) for fine-tuning; CIFAR-10 and CIFAR-100 for transfer evaluation.",
+  "problem": "CNNs dominate image classification but Transformers have not been applied directly to raw image patches at scale.",
+  "method": "Images are split into 16x16 non-overlapping patches; each patch is linearly embedded and fed as a token sequence to a standard Transformer encoder pretrained on large image datasets.",
+  "dataset": "JFT-300M (300M images, 18k classes) for pre-training; ImageNet-1k for fine-tuning; CIFAR-10 and CIFAR-100 for transfer evaluation.",
   "eval_method": "fine-tuned",
   "results": "ViT-L/16 achieves 88.55% top-1 accuracy on ImageNet, outperforming EfficientNet-L2 (88.4%); transfers to 99.0% on CIFAR-10 and 94.6% on CIFAR-100.",
-  "contribution": "Demonstrates that a pure Transformer applied to image patches can match or surpass state-of-the-art CNNs when pre-trained on sufficiently large datasets, challenging CNN dominance in vision.",
+  "contribution": "Demonstrates that a pure Transformer applied to image patches can match or surpass state-of-the-art CNNs when pre-trained on sufficiently large datasets.",
   "limitations": "Requires very large-scale pre-training data; underperforms ResNets on ImageNet when trained from scratch without JFT.",
   "prerequisites": "Understanding of Transformer self-attention, patch embedding, and transfer learning for image classification.",
   "real_world_impact": "Opens the door to unified vision-language architectures by showing that Transformers can serve as general-purpose vision backbones.",
@@ -131,17 +119,14 @@ pre-training data — on ImageNet alone (without JFT) it underperforms ResNets."
 
 
 def _render_examples() -> str:
-    """Render FEW_SHOT_EXAMPLES into the prompt string."""
     parts = []
     for i, (excerpt, output_json) in enumerate(FEW_SHOT_EXAMPLES, start=1):
-        parts.append(
-            f"Example {i}\nInput:\n{excerpt}\n\nExpected Output:\n{output_json}"
-        )
+        parts.append(f"Example {i}\nInput:\n{excerpt}\n\nExpected Output:\n{output_json}")
     return "\n\n---\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
-# Prompt template — instructions + examples + actual papers
+# Prompt templates — one for batch, one for single paper
 # ---------------------------------------------------------------------------
 
 EXTRACTION_PROMPT_TEMPLATE = """\
@@ -151,25 +136,28 @@ For EACH paper provided, extract the following fields. Follow the examples below
 exactly — match field names, use "Not reported" for absent metrics, and never
 invent numbers not stated in the text.
 
+IMPORTANT: You MUST return one JSON object for EVERY paper listed. Do NOT skip
+any paper. If you cannot find a field, use "Not reported" or "Not specified".
+
 Fields to extract:
 - problem: what problem the paper addresses (1-2 sentences)
 - method: the core technical approach (1-2 sentences)
 - dataset: dataset name(s) and size if stated, or "Not specified"
-- eval_method: "zero-shot", "few-shot", "fine-tuned", "cross-validation", or a short description; "Not specified" if unclear
+- eval_method: "zero-shot", "few-shot", "fine-tuned", "cross-validation", or short description
 - results: 1-2 sentence narrative of key findings
 - contribution: what is novel versus prior work (1-2 sentences)
-- limitations: key weaknesses, stated or reasonably inferred; "Not explicitly discussed" if nothing evident
+- limitations: key weaknesses; "Not explicitly discussed" if nothing evident
 - prerequisites: background knowledge needed; "None specified" if self-contained
 - real_world_impact: ONE short sentence on practical significance
 - audience: who this paper is written for, as one short phrase
-- precision, recall, f1_score, accuracy, auc, bleu, rouge: ONLY if explicitly stated in the text; "Not reported" otherwise
-- other_metrics: any other reported metric not listed above, or "Not reported"
-- baseline: name of the baseline model/method the headline result was compared against, or "Not reported"
+- precision, recall, f1_score, accuracy, auc, bleu, rouge: ONLY if explicitly stated; "Not reported" otherwise
+- other_metrics: any other reported metric, or "Not reported"
+- baseline: baseline model/method compared against, or "Not reported"
 
 NEVER estimate or invent numeric values. If a number is not in the text, output "Not reported".
 
-Respond ONLY with a JSON array — no markdown fences, no preamble. Each element
-must have exactly these keys:
+Respond ONLY with a JSON array containing exactly {count} objects — no markdown fences, no preamble.
+Each element must have exactly these keys:
 arxiv_id, title, problem, method, dataset, eval_method, results, contribution,
 limitations, prerequisites, real_world_impact, audience, precision, recall,
 f1_score, accuracy, auc, bleu, rouge, other_metrics, baseline
@@ -181,11 +169,31 @@ FEW-SHOT EXAMPLES
 {examples}
 
 ========================================
-Now process the following {count} paper(s) and return ONLY valid JSON.
+Now process ALL {count} paper(s) below. Return EXACTLY {count} JSON objects.
 ========================================
 
 PAPERS:
 {papers_block}
+"""
+
+# Simpler single-paper prompt for individual retries — no array, just one object
+SINGLE_PAPER_PROMPT_TEMPLATE = """\
+You are extracting structured information from ONE machine learning research paper.
+
+Extract these fields exactly. Use "Not reported" for missing metrics.
+Never invent numeric values.
+
+Fields: problem, method, dataset, eval_method, results, contribution,
+limitations, prerequisites, real_world_impact, audience, precision, recall,
+f1_score, accuracy, auc, bleu, rouge, other_metrics, baseline
+
+Respond with a SINGLE JSON object (not an array).
+
+PAPER:
+arxiv_id: {arxiv_id}
+title: {title}
+text:
+{text}
 """
 
 
@@ -193,11 +201,12 @@ PAPERS:
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Cap per-paper text length. Sending the full PDF text worsens TPM (tokens-per-minute)
-# quota exhaustion — more tokens per call means hitting the ceiling faster even with
-# fewer requests. 15k chars covers abstract + intro + most of methods/results for a
-# typical arXiv paper, which is exactly where the fields we extract live.
-MAX_CHARS_PER_PAPER = 15_000
+MAX_CHARS_PER_PAPER = 8_000
+
+
+def _base_id(arxiv_id: str) -> str:
+    """Strip version suffix for fuzzy matching: '2301.12345v2' → '2301.12345'."""
+    return arxiv_id.split("v")[0] if "v" in arxiv_id else arxiv_id
 
 
 def _build_papers_block(papers, texts: dict[str, str]) -> str:
@@ -215,6 +224,59 @@ def _build_papers_block(papers, texts: dict[str, str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Single-paper fallback extractor
+# ---------------------------------------------------------------------------
+
+async def _extract_one_solo(
+    paper,
+    texts: dict[str, str],
+    semaphore: asyncio.Semaphore | None,
+) -> tuple["ExtractedPaper | None", dict | None]:
+    """
+    Extract a single paper with its own dedicated Gemini call.
+    Used as fallback when the batch call omits a paper.
+    Never raises — converts all failures to error dicts.
+    """
+    text = texts.get(paper.arxiv_id, paper.abstract)[:MAX_CHARS_PER_PAPER]
+    prompt = SINGLE_PAPER_PROMPT_TEMPLATE.format(
+        arxiv_id=paper.arxiv_id,
+        title=paper.title,
+        text=text,
+    )
+
+    try:
+        raw = await gemini_client.call_gemini("extraction", prompt, semaphore)
+    except Exception as e:
+        logger.error("[extraction] Solo retry failed for %s: %s", paper.arxiv_id, e)
+        return None, {"arxiv_id": paper.arxiv_id, "title": paper.title, "error": str(e)}
+
+    try:
+        data = json.loads(gemini_client.sanitize_json(raw))
+    except json.JSONDecodeError as e:
+        logger.error("[extraction] Solo JSON parse error for %s: %s", paper.arxiv_id, e)
+        return None, {"arxiv_id": paper.arxiv_id, "title": paper.title, "error": f"JSON parse error: {e}"}
+
+    # Normalise: solo prompt returns object, but sometimes still wraps in array
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not data or not isinstance(data, dict):
+        return None, {"arxiv_id": paper.arxiv_id, "title": paper.title, "error": "Empty solo response"}
+
+    # Ensure arxiv_id matches our paper (model may omit or alter it)
+    data["arxiv_id"] = paper.arxiv_id
+    data.setdefault("title", paper.title)
+
+    try:
+        ep = ExtractedPaper(**data)
+        cache_service.set_extraction(ep.arxiv_id, data)
+        logger.info("[extraction] Solo retry SUCCESS for %s", paper.arxiv_id)
+        return ep, None
+    except Exception as e:
+        logger.warning("[extraction] Solo parse error for %s: %s", paper.arxiv_id, e)
+        return None, {"arxiv_id": paper.arxiv_id, "title": paper.title, "error": f"Parse error: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Public async API
 # ---------------------------------------------------------------------------
 
@@ -226,19 +288,19 @@ async def extract_papers(
     """
     Async structured extraction with per-paper SQLite caching.
 
-    Papers already in the cache skip the Gemini call entirely.
-    Only cache-miss papers are batched into a single Gemini request
-    (bounded by the semaphore for concurrency control).
+    Strategy:
+      1. Cache hits → instant (0 Gemini calls).
+      2. Cache misses → ONE batched Gemini call (all papers in one prompt).
+      3. Any paper Gemini omits from its batch response → individual retry call.
+         This guarantees no paper is silently dropped.
 
-    Returns:
-        Tuple of (successful_extractions, errors) where errors is a list of
-        {"arxiv_id": ..., "error": ...} dicts for papers that failed extraction.
+    Returns (successful_extractions, errors).
     """
     results: list[ExtractedPaper] = []
     errors: list[dict] = []
     uncached_papers = []
 
-    # --- Stage A: Serve cached extractions ---
+    # ── Stage A: Serve cached extractions ────────────────────────────────────
     for p in papers:
         cached = cache_service.get_extraction(p.arxiv_id)
         if cached:
@@ -255,56 +317,94 @@ async def extract_papers(
         return results, errors
 
     logger.info(
-        "[extraction] %d cache hits, %d cache misses — calling Gemini.",
-        len(results), len(uncached_papers),
+        "[extraction] %d cache hits, %d cache misses — batched call for %d papers.",
+        len(results), len(uncached_papers), len(uncached_papers),
     )
 
-    # --- Stage B: Batch Gemini call for uncached papers ---
+    # ── Stage B: Single batched Gemini call ──────────────────────────────────
     prompt = EXTRACTION_PROMPT_TEMPLATE.format(
         examples=_render_examples(),
         count=len(uncached_papers),
         papers_block=_build_papers_block(uncached_papers, texts),
     )
 
+    batch_failed_all = False
+    returned_data: list[dict] = []
+
     try:
         raw = await gemini_client.call_gemini("extraction", prompt, semaphore)
-    except Exception as e:
-        logger.error("[extraction] Gemini call failed entirely: %s", e)
-        # All uncached papers fail — add them to errors
-        for p in uncached_papers:
-            errors.append({"arxiv_id": p.arxiv_id, "title": p.title, "error": str(e)})
-        return results, errors
-
-    try:
         data = json.loads(gemini_client.sanitize_json(raw))
-    except json.JSONDecodeError as e:
-        logger.error("[extraction] JSON parse error: %s\nRaw: %.300s", e, raw)
-        for p in uncached_papers:
-            errors.append({"arxiv_id": p.arxiv_id, "title": p.title, "error": f"JSON parse error: {e}"})
-        return results, errors
+        if isinstance(data, dict):
+            data = [data]
+        if isinstance(data, list):
+            returned_data = [item for item in data if isinstance(item, dict)]
+        else:
+            logger.error("[extraction] Unexpected batch response shape: %s", type(data))
+            batch_failed_all = True
+    except Exception as e:
+        logger.error("[extraction] Batched Gemini call failed: %s", e)
+        batch_failed_all = True
 
-    # --- Stage C: Parse each extracted paper individually (graceful degradation) ---
-    for item in data:
+    # ── Stage C: Parse batch results ─────────────────────────────────────────
+    # Build fuzzy ID lookup: base_id → paper object (handles version suffixes)
+    paper_by_base_id = {_base_id(p.arxiv_id): p for p in uncached_papers}
+    successfully_extracted_ids: set[str] = set()
+
+    for item in returned_data:
+        raw_id   = item.get("arxiv_id", "")
+        # Try exact match first, then base-id fuzzy match
+        paper = (
+            next((p for p in uncached_papers if p.arxiv_id == raw_id), None)
+            or paper_by_base_id.get(_base_id(raw_id))
+        )
+        if paper:
+            item["arxiv_id"] = paper.arxiv_id   # normalise to our canonical ID
+        item.setdefault("title", paper.title if paper else raw_id)
+
         try:
             ep = ExtractedPaper(**item)
             cache_service.set_extraction(ep.arxiv_id, item)
             results.append(ep)
+            successfully_extracted_ids.add(ep.arxiv_id)
         except Exception as e:
-            arxiv_id = item.get("arxiv_id", "unknown")
+            arxiv_id = item.get("arxiv_id", raw_id)
+            logger.warning("[extraction] Parse error for %s: %s", arxiv_id, e)
+            errors.append({"arxiv_id": arxiv_id, "title": item.get("title", ""), "error": f"Parse error: {e}"})
+
+    # ── Stage D: Retry papers Gemini omitted from the batch ──────────────────
+    missing = [
+        p for p in uncached_papers
+        if p.arxiv_id not in successfully_extracted_ids
+    ]
+
+    if missing:
+        if batch_failed_all:
             logger.warning(
-                "[extraction] Failed to parse extraction for %s: %s — skipping.",
-                arxiv_id, e,
+                "[extraction] Batch call failed entirely — retrying all %d papers individually.", len(missing)
             )
-            errors.append({
-                "arxiv_id": arxiv_id,
-                "title": item.get("title", "Unknown"),
-                "error": f"Extraction parse error: {e}",
-            })
+        else:
+            logger.warning(
+                "[extraction] Batch omitted %d/%d papers — retrying individually: %s",
+                len(missing), len(uncached_papers),
+                [p.arxiv_id for p in missing],
+            )
+
+        # Run individual retries concurrently (bounded by semaphore)
+        retry_outcomes = await asyncio.gather(
+            *[_extract_one_solo(p, texts, semaphore) for p in missing]
+        )
+        for ep, err in retry_outcomes:
+            if ep is not None:
+                results.append(ep)
+            elif err is not None:
+                errors.append(err)
 
     if errors:
         logger.warning(
-            "[extraction] %d/%d papers extracted successfully, %d failed.",
+            "[extraction] Final: %d/%d papers extracted, %d failed.",
             len(results), len(papers), len(errors),
         )
+    else:
+        logger.info("[extraction] All %d papers extracted successfully.", len(results))
 
     return results, errors

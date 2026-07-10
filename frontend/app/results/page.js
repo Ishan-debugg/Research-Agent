@@ -184,6 +184,11 @@ export default function ResultsPage() {
             [ research landscape ]
           </p>
           <h1 className="font-[var(--font-display)] text-2xl md:text-3xl">{research.query}</h1>
+          {research.totalElapsed != null && (
+            <p className="font-[var(--font-mono)] text-xs text-[var(--text-muted)] mt-2 tabular-nums">
+              Completed in {research.totalElapsed}s
+            </p>
+          )}
         </div>
 
         {/* ── Feature: Export buttons ── */}

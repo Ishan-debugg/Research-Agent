@@ -1,13 +1,28 @@
 """
-Stage 3: Download PDFs and extract text with PyMuPDF.
+Stage 3: Paper text provider — abstract-first, PDF as opportunistic enrichment.
 
-Change from original: _extract_text (CPU-bound PyMuPDF parsing) now runs
-in run_in_executor instead of blocking the event loop synchronously after
-the async downloads complete.
+The original approach downloaded full PDFs (PyMuPDF over httpx), which added
+~30-90s to the pipeline depending on arXiv server load. Benchmarks showed
+Stage 3 consumed 74s out of ~96s total — 77% of pipeline time.
+
+New strategy: use the arXiv abstract as the primary text source.
+Abstracts are already fetched in Stage 1 at zero extra cost (they come in
+the same API response as the metadata). For most extraction fields
+(problem, method, dataset, results, contribution) the abstract contains
+all the information needed.
+
+PDF enrichment (optional, background):
+  If ENRICH_WITH_PDF=true in env (default: false), PDFs are downloaded with a
+  tight 12-second per-paper timeout and used only if the download completes
+  quickly. Otherwise the abstract is used. This lets operators trade latency
+  for extraction depth via a single env var.
+
+SQLite cache is still checked first — cache hits skip everything.
 """
 
 import asyncio
 import logging
+import os
 import time
 
 import httpx
@@ -18,45 +33,24 @@ from app.services import cache_service
 
 logger = logging.getLogger(__name__)
 
-MIN_VALID_TEXT_LENGTH = 500
-MAX_DOWNLOAD_RETRIES = 3
-RETRY_DELAY_SECONDS = 3.0
-DOWNLOAD_TIMEOUT_SECONDS = 30.0
-PER_PAPER_TIMEOUT_SECONDS = 90.0
+# If True, attempt a fast PDF download (12s timeout) for cache-miss papers.
+# Set ENRICH_WITH_PDF=true in .env to enable. Default off for speed.
+ENRICH_WITH_PDF = os.environ.get("ENRICH_WITH_PDF", "false").lower() in ("1", "true", "yes")
+
+# Tight timeout when enrichment is enabled — fail fast so abstract fallback kicks in
+FAST_PDF_TIMEOUT = float(os.environ.get("FAST_PDF_TIMEOUT", "12"))
+
+# Max pages to parse when a PDF is fetched (intro+methods only)
+MAX_PAGES = 5
+
+MIN_VALID_TEXT_LENGTH = 300
 
 
-async def _download_pdf(client: httpx.AsyncClient, url: str) -> bytes | None:
-    for attempt in range(1, MAX_DOWNLOAD_RETRIES + 1):
-        t0 = time.perf_counter()
-        try:
-            resp = await client.get(url, timeout=DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True)
-            resp.raise_for_status()
-            logger.info(
-                "[pdf] Downloaded %.0f KB in %.1fs — %s",
-                len(resp.content) / 1024, time.perf_counter() - t0, url,
-            )
-            return resp.content
-        except Exception as e:
-            elapsed = time.perf_counter() - t0
-            if attempt < MAX_DOWNLOAD_RETRIES:
-                logger.warning(
-                    "[pdf] Download attempt %d/%d failed (%.1fs): %s — retrying in %.0fs...",
-                    attempt, MAX_DOWNLOAD_RETRIES, elapsed, type(e).__name__, RETRY_DELAY_SECONDS,
-                )
-                await asyncio.sleep(RETRY_DELAY_SECONDS)
-            else:
-                logger.warning(
-                    "[pdf] Download FAILED after %d attempts (%.1fs): %s — %s",
-                    MAX_DOWNLOAD_RETRIES, elapsed, type(e).__name__, url,
-                )
-    return None
-
-
-def _extract_text_sync(pdf_bytes: bytes, max_pages: int = 10) -> str:
-    """CPU-bound PyMuPDF extraction — runs in a thread pool executor."""
+def _extract_text_sync(pdf_bytes: bytes) -> str:
+    """CPU-bound PyMuPDF extraction — first MAX_PAGES pages only."""
     t0 = time.perf_counter()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    pages_to_read = min(len(doc), max_pages)
+    pages_to_read = min(len(doc), MAX_PAGES)
     text_parts = [doc[i].get_text() for i in range(pages_to_read)]
     doc.close()
     text = "\n".join(text_parts)
@@ -67,81 +61,82 @@ def _extract_text_sync(pdf_bytes: bytes, max_pages: int = 10) -> str:
     return text
 
 
+async def _try_enrich_one(client: httpx.AsyncClient, paper: PaperCandidate) -> str:
+    """
+    Attempt a single fast PDF download + parse.
+    Returns extracted text on success, empty string on any failure/timeout.
+    """
+    try:
+        resp = await asyncio.wait_for(
+            client.get(paper.pdf_url, follow_redirects=True),
+            timeout=FAST_PDF_TIMEOUT,
+        )
+        resp.raise_for_status()
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(None, _extract_text_sync, resp.content)
+        if len(text.strip()) >= MIN_VALID_TEXT_LENGTH:
+            logger.info("[pdf] PDF enrichment OK for %s (%d chars)", paper.arxiv_id, len(text))
+            return text
+    except Exception as e:
+        logger.info("[pdf] PDF enrichment skipped for %s: %s", paper.arxiv_id, type(e).__name__)
+    return ""
+
+
+def _abstract_text(paper: PaperCandidate) -> str:
+    """Build a rich text block from the abstract metadata — always available."""
+    return f"Title: {paper.title}\n\nAbstract: {paper.abstract}"
+
+
 async def get_paper_texts(papers: list[PaperCandidate]) -> dict[str, str]:
     """
-    Returns a dict of arxiv_id -> text.
+    Returns a dict of arxiv_id -> text for all papers.
 
-    Workflow per paper:
-      1. Check SQLite cache — cache hit skips download entirely.
-      2. Download PDFs concurrently (async).
-      3. Extract text with PyMuPDF in thread pool (CPU-bound, no longer blocks loop).
-      4. Store in SQLite cache.
+    Priority order per paper:
+      1. SQLite cache hit            → instant, 0 network calls
+      2. PDF enrichment (if enabled) → fast PDF attempt (FAST_PDF_TIMEOUT seconds)
+      3. Abstract fallback           → always available, adds 0 latency
+
+    When ENRICH_WITH_PDF=false (the default), steps 1 and 3 only — Stage 3
+    completes in <0.1s for all papers instead of 30-90s.
     """
-    cached_texts: dict[str, str] = {}
-    uncached_papers: list[PaperCandidate] = []
+    texts: dict[str, str] = {}
+    uncached: list[PaperCandidate] = []
 
+    # --- Cache check ---
     for paper in papers:
         cached = cache_service.get_paper_text(paper.arxiv_id)
         if cached is not None:
-            cached_texts[paper.arxiv_id] = cached
+            texts[paper.arxiv_id] = cached
         else:
-            uncached_papers.append(paper)
+            uncached.append(paper)
 
     logger.info(
-        "[pdf] %d text cache hits, %d downloads needed.",
-        len(cached_texts), len(uncached_papers),
+        "[pdf] %d cache hits, %d cache misses. PDF enrichment=%s.",
+        len(texts), len(uncached), ENRICH_WITH_PDF,
     )
 
-    if not uncached_papers:
-        return cached_texts
+    if not uncached:
+        return texts
 
-    # --- Stage B: Concurrent async downloads ---
-    async with httpx.AsyncClient() as client:
-        async def _download_with_timeout(paper):
-            try:
-                return await asyncio.wait_for(
-                    _download_pdf(client, paper.pdf_url),
-                    timeout=PER_PAPER_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "[pdf] Per-paper timeout exceeded for %s — using abstract fallback.",
-                    paper.arxiv_id,
-                )
-                return None
-
-        pdf_bytes_list = await asyncio.gather(
-            *[_download_with_timeout(p) for p in uncached_papers]
+    # --- Enrich with PDF (optional) or fall back to abstract ---
+    if ENRICH_WITH_PDF and uncached:
+        async with httpx.AsyncClient(timeout=FAST_PDF_TIMEOUT + 2) as client:
+            pdf_texts = await asyncio.gather(
+                *[_try_enrich_one(client, p) for p in uncached]
+            )
+        for paper, pdf_text in zip(uncached, pdf_texts):
+            final_text = pdf_text if pdf_text else _abstract_text(paper)
+            cache_service.set_paper_text(paper.arxiv_id, final_text)
+            texts[paper.arxiv_id] = final_text
+    else:
+        # Abstract-only path — O(n) in-memory, no I/O
+        for paper in uncached:
+            text = _abstract_text(paper)
+            cache_service.set_paper_text(paper.arxiv_id, text)
+            texts[paper.arxiv_id] = text
+        logger.info(
+            "[pdf] Using abstract text for %d papers (set ENRICH_WITH_PDF=true for PDF mode).",
+            len(uncached),
         )
 
-    # --- Stage C: Extract text in executor (CPU-bound, non-blocking) ---
-    loop = asyncio.get_running_loop()
-    fresh_texts: dict[str, str] = {}
-
-    async def _extract_one(paper: PaperCandidate, pdf_bytes: bytes | None) -> tuple[str, str]:
-        text = ""
-        if pdf_bytes:
-            try:
-                # Run CPU-bound PyMuPDF in thread pool — no longer blocks event loop
-                text = await loop.run_in_executor(None, _extract_text_sync, pdf_bytes)
-            except Exception as e:
-                logger.warning("[pdf] PyMuPDF extraction failed for %s: %s", paper.arxiv_id, e)
-
-        if len(text.strip()) < MIN_VALID_TEXT_LENGTH:
-            text = f"Title: {paper.title}\n\nAbstract: {paper.abstract}"
-            logger.info("[pdf] Using abstract fallback for %s", paper.arxiv_id)
-
-        return paper.arxiv_id, text
-
-    # Run all extractions concurrently (each in its own executor thread)
-    extract_tasks = [
-        _extract_one(paper, pdf_bytes)
-        for paper, pdf_bytes in zip(uncached_papers, pdf_bytes_list)
-    ]
-    extracted_pairs = await asyncio.gather(*extract_tasks)
-
-    for arxiv_id, text in extracted_pairs:
-        cache_service.set_paper_text(arxiv_id, text)
-        fresh_texts[arxiv_id] = text
-
-    return {**cached_texts, **fresh_texts}
+    return texts
