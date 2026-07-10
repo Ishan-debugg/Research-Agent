@@ -592,7 +592,7 @@ async def search_stream(request: Request, query: str):
             })
 
             t4 = time.perf_counter()
-            graph = await build_knowledge_graph(extracted)
+            graph = await build_knowledge_graph(extracted, semaphore=_gemini_semaphore)
 
             yield _sse_event("stage", {
                 "stage": "synthesized", "progress": 5, "total": 5,
