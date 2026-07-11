@@ -1,14 +1,8 @@
 """
-Stage 5: Knowledge graph synthesis via Gemini.
+Stage 5: Knowledge graph synthesis via Gemini 2.5 Pro (SYNTHESIS_MODEL).
 
-Changes:
-  - build_knowledge_graph now accepts a semaphore so Stage 5 respects the
-    global concurrency cap (it was previously passing semaphore=None).
-  - Synthesis routed to EXTRACTION_MODEL (flash-lite) instead of the slower
-    flash model — graph JSON is ~2-3k tokens, flash-lite handles it fine.
-    This alone should cut Stage 5 from ~32s to ~8-12s.
-  - max_output_tokens for synthesis reduced to 4096 (graph JSON never exceeds
-    ~3k tokens; 8192 was causing the model to over-generate).
+Routes exclusively to the "synthesis" task type so it always uses
+SYNTHESIS_MODEL (gemini-2.5-pro) — never the Groq extraction model.
 """
 
 import asyncio
@@ -63,7 +57,7 @@ async def build_knowledge_graph(
 ) -> KnowledgeGraph:
     """
     Async graph synthesis with SQLite caching.
-    Now accepts semaphore so it respects global Gemini concurrency cap.
+    Always uses Gemini SYNTHESIS_MODEL (gemini-2.5-pro) via the "synthesis" task type.
     """
     query_hash = _make_query_hash(papers)
 
@@ -77,9 +71,9 @@ async def build_knowledge_graph(
         summaries_block=_build_summaries_block(papers),
     )
 
-    # Route to "synthesis" task type but override to use flash-lite speed.
-    # Graph JSON is structured and small (~2-3k tokens) — flash-lite is sufficient.
-    raw = await gemini_client.call_gemini("extraction", prompt, semaphore=semaphore)
+    # "synthesis" task type → always routes to SYNTHESIS_MODEL (gemini-2.5-pro)
+    # Never falls back to a Groq model — fallback is hardcoded to gemini-2.0-flash.
+    raw = await gemini_client.call_gemini("synthesis", prompt, semaphore=semaphore)
 
     try:
         data = json.loads(gemini_client.sanitize_json(raw))

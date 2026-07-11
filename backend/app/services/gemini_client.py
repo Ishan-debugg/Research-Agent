@@ -56,25 +56,21 @@ MODEL_NAME = EXTRACTION_MODEL
 _TASK_CONFIG: dict[str, dict] = {
     "extraction": {
         "primary":          EXTRACTION_MODEL,
-        "fallback":         SYNTHESIS_MODEL,
-        # Temperature 0.0 → maximally deterministic; eliminates hallucinated metrics
+        # Fallback must be a valid Gemini model — never a Groq model name.
+        # EXTRACTION_MODEL may be a Groq model (mixtral), so hardcode Gemini fallback.
+        "fallback":         "gemini-2.0-flash",
         "temperature":      0.0,
-        "top_p":            1.0,     # No nucleus sampling at T=0 (greedy)
-        "top_k":            1,       # Greedy decoding — single most likely token
-        # 4096 is ample for a 5-paper batch (each field is a sentence; total ~2-3k tokens).
-        # Gemini charges generation latency against max_output_tokens even when the actual
-        # output is shorter — smaller cap = faster wall-clock time.
+        "top_p":            1.0,
+        "top_k":            1,
         "max_output_tokens": 4096,
     },
     "synthesis": {
         "primary":          SYNTHESIS_MODEL,
-        "fallback":         EXTRACTION_MODEL,
-        # Small temperature for creative cross-paper relationships
+        # Safe Gemini fallback — never use EXTRACTION_MODEL which may be a Groq model.
+        "fallback":         "gemini-2.0-flash",
         "temperature":      0.2,
-        "top_p":            0.9,     # Tighter nucleus sampling
-        "top_k":            40,      # Standard diverse decoding
-        # Graph JSON is ~1-3k tokens; 3000 gives comfortable headroom without the
-        # latency penalty of the original 8192.
+        "top_p":            0.9,
+        "top_k":            40,
         "max_output_tokens": 3000,
     },
 }

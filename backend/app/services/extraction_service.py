@@ -1,27 +1,27 @@
 """
-Stage 4: Structured extraction via Gemini (extraction tier model).
+Stage 4: Structured extraction via Groq Mixtral (fast) with Gemini as fallback.
 
 Key features:
   1. FEW-SHOT PROMPTING — 2 high-quality examples in every prompt for schema
      adherence and to prevent hallucinated metric values.
 
   2. SQLITE CACHE — Each paper's extraction is cached by arxiv_id. Cache hits
-     skip the Gemini call entirely (0 tokens consumed).
+     skip the API call entirely (0 tokens consumed).
 
   3. SMART BATCH + PER-PAPER FALLBACK:
-     a. All cache-miss papers are sent in ONE batched Gemini call (fast path).
-     b. Any paper Gemini omits from its response is retried in its OWN
-        individual call (robust fallback). This means 0 papers are silently
-        dropped — every paper either extracts or gets a clear error.
-     c. ID matching is fuzzy (strips version suffix) to handle Gemini returning
-        "2301.12345" when we sent "2301.12345v2".
+     a. All cache-miss papers are sent in ONE batched call (fast path).
+     b. Any paper omitted from the batch response is retried individually.
+        This guarantees no paper is silently dropped.
+     c. ID matching is fuzzy (strips version suffix).
 
-  4. DETERMINISTIC TEMPERATURE — temperature=0.0, top_k=1 via gemini_client.
+  4. DETERMINISTIC TEMPERATURE — temperature=0.0 via groq_client.
 
-  5. TEXT CAPPED AT 8k chars/paper — covers abstract + intro + methods without
-     ballooning prompt size and slowing Gemini.
+  5. TEXT CAPPED AT 8k chars/paper.
 
   6. GRACEFUL DEGRADATION — per-paper try/except in the parse loop.
+
+  Model: Groq Mixtral-8x7b (3-4x faster than Gemini flash for extraction).
+  Graph synthesis remains on Gemini 2.5 Pro (see graph_service.py).
 """
 
 import asyncio
@@ -33,8 +33,9 @@ import google.generativeai as genai
 from app.models.schemas import ExtractedPaper
 from app.services import cache_service
 from app.services import gemini_client
+from app.services import groq_client
 
-MODEL_NAME = gemini_client.MODEL_NAME
+MODEL_NAME = groq_client.GROQ_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -245,13 +246,13 @@ async def _extract_one_solo(
     )
 
     try:
-        raw = await gemini_client.call_gemini("extraction", prompt, semaphore)
+        raw = await groq_client.call_groq(prompt, semaphore)
     except Exception as e:
         logger.error("[extraction] Solo retry failed for %s: %s", paper.arxiv_id, e)
         return None, {"arxiv_id": paper.arxiv_id, "title": paper.title, "error": str(e)}
 
     try:
-        data = json.loads(gemini_client.sanitize_json(raw))
+        data = json.loads(groq_client.sanitize_json(raw))
     except json.JSONDecodeError as e:
         logger.error("[extraction] Solo JSON parse error for %s: %s", paper.arxiv_id, e)
         return None, {"arxiv_id": paper.arxiv_id, "title": paper.title, "error": f"JSON parse error: {e}"}
@@ -332,8 +333,8 @@ async def extract_papers(
     returned_data: list[dict] = []
 
     try:
-        raw = await gemini_client.call_gemini("extraction", prompt, semaphore)
-        data = json.loads(gemini_client.sanitize_json(raw))
+        raw = await groq_client.call_groq(prompt, semaphore)
+        data = json.loads(groq_client.sanitize_json(raw))
         if isinstance(data, dict):
             data = [data]
         if isinstance(data, list):
@@ -342,7 +343,7 @@ async def extract_papers(
             logger.error("[extraction] Unexpected batch response shape: %s", type(data))
             batch_failed_all = True
     except Exception as e:
-        logger.error("[extraction] Batched Gemini call failed: %s", e)
+        logger.error("[extraction] Batched Groq call failed: %s", e)
         batch_failed_all = True
 
     # ── Stage C: Parse batch results ─────────────────────────────────────────
