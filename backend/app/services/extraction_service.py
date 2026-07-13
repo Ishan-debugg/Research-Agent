@@ -133,10 +133,7 @@ def _render_examples() -> str:
 EXTRACTION_PROMPT_TEMPLATE = """\
 You are extracting structured information from machine learning research papers.
 
-For EACH paper provided, extract the following fields. Follow the examples below
-exactly — match field names, use "Not reported" for absent metrics, and never
-invent numbers not stated in the text.
-
+For EACH paper provided, extract the following fields exactly.
 IMPORTANT: You MUST return one JSON object for EVERY paper listed. Do NOT skip
 any paper. If you cannot find a field, use "Not reported" or "Not specified".
 
@@ -162,16 +159,6 @@ Each element must have exactly these keys:
 arxiv_id, title, problem, method, dataset, eval_method, results, contribution,
 limitations, prerequisites, real_world_impact, audience, precision, recall,
 f1_score, accuracy, auc, bleu, rouge, other_metrics, baseline
-
-========================================
-FEW-SHOT EXAMPLES
-========================================
-
-{examples}
-
-========================================
-Now process ALL {count} paper(s) below. Return EXACTLY {count} JSON objects.
-========================================
 
 PAPERS:
 {papers_block}
@@ -202,7 +189,7 @@ text:
 # Helpers
 # ---------------------------------------------------------------------------
 
-MAX_CHARS_PER_PAPER = 8_000
+MAX_CHARS_PER_PAPER = 3_000  # Keeps 5-paper batch safely under Groq free-tier 6K TPM limit
 
 
 def _base_id(arxiv_id: str) -> str:
@@ -324,7 +311,6 @@ async def extract_papers(
 
     # ── Stage B: Single batched Gemini call ──────────────────────────────────
     prompt = EXTRACTION_PROMPT_TEMPLATE.format(
-        examples=_render_examples(),
         count=len(uncached_papers),
         papers_block=_build_papers_block(uncached_papers, texts),
     )

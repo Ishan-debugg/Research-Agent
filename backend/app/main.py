@@ -208,19 +208,23 @@ app.add_middleware(APIKeyMiddleware)
 ARXIV_CANDIDATE_COUNT = int(os.environ.get("ARXIV_CANDIDATE_COUNT", 20))
 TOP_K_PAPERS          = int(os.environ.get("TOP_K_PAPERS", 5))
 GEMINI_CONCURRENCY    = int(os.environ.get("GEMINI_CONCURRENCY", 5))
+GROQ_CONCURRENCY      = int(os.environ.get("GROQ_CONCURRENCY", 5))
 PIPELINE_TIMEOUT      = int(os.environ.get("PIPELINE_TIMEOUT", 120))
 MAX_QUERY_LENGTH      = int(os.environ.get("MAX_QUERY_LENGTH", 500))
 MIN_QUERY_LENGTH      = 3
 
-# Global semaphore: limits simultaneous Gemini API calls across all requests.
-# Initialised at module load so it is shared across the entire process lifetime.
-_gemini_semaphore: asyncio.Semaphore | None = None
+# Two separate semaphores — Groq extraction and Gemini synthesis use different
+# APIs and different rate limits. Sharing one semaphore meant synthesis could
+# queue behind extraction calls even though there's no API contention.
+_gemini_semaphore: asyncio.Semaphore | None = None  # Gemini synthesis (graph)
+_groq_semaphore:   asyncio.Semaphore | None = None  # Groq extraction
 
 
 @app.on_event("startup")
 async def _startup():
-    global _gemini_semaphore
+    global _gemini_semaphore, _groq_semaphore
     _gemini_semaphore = asyncio.Semaphore(GEMINI_CONCURRENCY)
+    _groq_semaphore   = asyncio.Semaphore(GROQ_CONCURRENCY)
 
     # Preload the CrossEncoder model so the first request doesn't pay cold-start cost
     logger.info("[startup] Preloading reranker model...")
@@ -235,8 +239,8 @@ async def _startup():
     logger.info("[startup] Initial cache prune: %s", pruned)
 
     logger.info(
-        "[startup] Gemini concurrency=%d | candidates=%d | top_k=%d | timeout=%ds",
-        GEMINI_CONCURRENCY, ARXIV_CANDIDATE_COUNT, TOP_K_PAPERS, PIPELINE_TIMEOUT,
+        "[startup] Gemini concurrency=%d | Groq concurrency=%d | candidates=%d | top_k=%d | timeout=%ds",
+        GEMINI_CONCURRENCY, GROQ_CONCURRENCY, ARXIV_CANDIDATE_COUNT, TOP_K_PAPERS, PIPELINE_TIMEOUT,
     )
 
 
@@ -339,19 +343,19 @@ async def _run_pipeline(query: str, request_id: str = ""):
         time.perf_counter() - t2,
     )
 
-    # --- Stage 4: Structured extraction (cache-aware, semaphore-bounded) ---
+    # --- Stage 4: Structured extraction (cache-aware, Groq-semaphore-bounded) ---
     t3 = time.perf_counter()
     extracted, extraction_errors = await extract_papers(
-        top_papers, texts, semaphore=_gemini_semaphore
+        top_papers, texts, semaphore=_groq_semaphore
     )
     logger.info(
         "[stage 4: extract]    %.1fs  (%d ok, %d errors)",
         time.perf_counter() - t3, len(extracted), len(extraction_errors),
     )
 
-    # --- Stage 5: Knowledge graph synthesis (cache-aware) ---
+    # --- Stage 5: Knowledge graph synthesis (Groq primary, Gemini fallback) ---
     t4 = time.perf_counter()
-    graph = await build_knowledge_graph(extracted, semaphore=_gemini_semaphore)
+    graph = await build_knowledge_graph(extracted, semaphore=_groq_semaphore)
     logger.info(
         "[stage 5: synthesize] %.1fs",
         time.perf_counter() - t4,
@@ -439,6 +443,7 @@ async def health():
 
     # Check Gemini semaphore exists
     checks["gemini_semaphore_ready"] = _gemini_semaphore is not None
+    checks["groq_semaphore_ready"]   = _groq_semaphore is not None
 
     # Include cache row counts for observability
     try:
@@ -610,7 +615,7 @@ async def search_stream(request: Request, query: str):
 
             t3 = time.perf_counter()
             extracted, extraction_errors = await _run_with_timeout(
-                extract_papers(top_papers, texts, semaphore=_gemini_semaphore),
+                extract_papers(top_papers, texts, semaphore=_groq_semaphore),
                 "extraction",
             )
 
@@ -627,7 +632,7 @@ async def search_stream(request: Request, query: str):
             })
 
             t4 = time.perf_counter()
-            graph = await build_knowledge_graph(extracted, semaphore=_gemini_semaphore)
+            graph = await build_knowledge_graph(extracted, semaphore=_groq_semaphore)
 
             yield _sse_event("stage", {
                 "stage": "synthesized", "progress": 5, "total": 5,
