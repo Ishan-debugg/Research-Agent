@@ -3,8 +3,8 @@ groq_client.py — Async Groq API client for fast paper extraction.
 
 Architecture:
   - Uses Groq's OpenAI-compatible REST API (no SDK required, pure httpx)
-  - Routes "extraction" task to mixtral-8x7b-32768 (3-4x faster than Gemini flash)
-  - Identical public interface to gemini_client.call_gemini() for zero-friction swap
+  - Routes "extraction" task to llama-3.1-8b-instant (fastest Groq model)
+  - Native async httpx.AsyncClient — no thread-pool wrapping, true async I/O
   - Respects asyncio.Semaphore for concurrency cap
   - Retries on 429 with exponential backoff (Groq free: 30 RPM)
   - sanitize_json re-exported so callers need only import groq_client
@@ -33,11 +33,23 @@ from app.services.gemini_client import sanitize_json  # noqa: F401
 logger = logging.getLogger(__name__)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL   = os.environ.get("GROQ_MODEL", "mixtral-8x7b-32768")
+GROQ_MODEL   = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# Groq free tier: 30 req/min, 14 400 req/day for Mixtral
+# Groq free tier: 30 req/min, 14 400 req/day
 _TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+
+# Shared async client — created once per process lifetime, reused across calls.
+# AsyncClient keeps a connection pool open so subsequent requests skip TCP handshake.
+_async_client: httpx.AsyncClient | None = None
+
+
+def _get_async_client() -> httpx.AsyncClient:
+    """Return (or lazily create) the shared async HTTP client."""
+    global _async_client
+    if _async_client is None or _async_client.is_closed:
+        _async_client = httpx.AsyncClient(timeout=_TIMEOUT)
+    return _async_client
 
 
 def _is_rate_limit(exc: Exception) -> bool:
@@ -45,32 +57,29 @@ def _is_rate_limit(exc: Exception) -> bool:
     return "429" in msg or "rate_limit" in msg or "too many requests" in msg
 
 
-def _call_groq_sync(prompt: str) -> str:
+async def _call_groq_async(prompt: str, system_message: str | None = None) -> str:
     """
-    Synchronous Groq chat-completions call.
-    Returns the raw content string (should be JSON).
+    Native async Groq chat-completions call via httpx.AsyncClient.
+    No thread-pool wrapping — true async I/O keeps the event loop free.
     """
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY not set in environment.")
 
+    default_system = (
+        "You are a research assistant that extracts structured information "
+        "from ML papers. Always respond with a valid JSON array — "
+        "no markdown, no code fences, no commentary. "
+        "If extracting one paper return a single-element array."
+    )
+
     payload = {
         "model": GROQ_MODEL,
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a research assistant that extracts structured information "
-                    "from ML papers. Always respond with a valid JSON array — "
-                    "no markdown, no code fences, no commentary. "
-                    "If extracting one paper return a single-element array."
-                ),
-            },
+            {"role": "system", "content": system_message or default_system},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.0,
         "max_tokens": 4096,
-        # NOTE: do NOT use response_format json_object — that forces a single
-        # object and breaks batch prompts that expect a JSON array.
     }
 
     headers = {
@@ -78,8 +87,8 @@ def _call_groq_sync(prompt: str) -> str:
         "Content-Type": "application/json",
     }
 
-    with httpx.Client(timeout=_TIMEOUT) as client:
-        resp = client.post(GROQ_API_URL, json=payload, headers=headers)
+    client = _get_async_client()
+    resp = await client.post(GROQ_API_URL, json=payload, headers=headers)
 
     if resp.status_code == 429:
         raise RuntimeError(f"429 Rate limit exceeded: {resp.text}")
@@ -96,21 +105,29 @@ def _call_groq_sync(prompt: str) -> str:
 async def call_groq(
     prompt: str,
     semaphore: asyncio.Semaphore | None = None,
+    system_message: str | None = None,
+    model_override: str | None = None,
 ) -> str:
     """
-    Async Groq call — mirrors gemini_client.call_gemini() signature.
-    Wraps the sync HTTP call in a thread-pool executor.
+    Native async Groq call — no thread-pool executor.
+    Uses a shared httpx.AsyncClient with a persistent connection pool.
+
+    Args:
+        prompt:          The user prompt string.
+        semaphore:       asyncio.Semaphore for concurrency cap (optional).
+        system_message:  Custom system prompt (defaults to extraction assistant).
+        model_override:  Override GROQ_MODEL for this call (e.g. graph synthesis).
     """
-    loop = asyncio.get_running_loop()
+    target_model = model_override or GROQ_MODEL
 
     @retry(
         retry=retry_if_exception(_is_rate_limit),
-        wait=wait_exponential_jitter(initial=2, max=30, jitter=3),
+        wait=wait_exponential_jitter(initial=1, max=15, jitter=2),
         stop=stop_after_attempt(4),
         reraise=True,
     )
     async def _attempt() -> str:
-        return await loop.run_in_executor(None, _call_groq_sync, prompt)
+        return await _call_groq_async(prompt, system_message)
 
     class _null_ctx:
         async def __aenter__(self): return self
@@ -121,7 +138,7 @@ async def call_groq(
         try:
             result = await _attempt()
             elapsed = time.perf_counter() - t0
-            logger.info("[groq] extraction  model=%-28s  %.1fs", GROQ_MODEL, elapsed)
+            logger.info("[groq] %-12s  model=%-28s  %.1fs", "graph" if model_override else "extraction", target_model, elapsed)
             return result
         except Exception as exc:
             elapsed = time.perf_counter() - t0

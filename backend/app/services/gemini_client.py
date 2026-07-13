@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 EXTRACTION_MODEL = os.environ.get("EXTRACTION_MODEL", "gemini-2.5-flash")
-SYNTHESIS_MODEL  = os.environ.get("SYNTHESIS_MODEL",  "gemini-2.5-pro")
+SYNTHESIS_MODEL  = os.environ.get("SYNTHESIS_MODEL",  "gemini-2.0-flash")
 
 # Kept for backward-compat with techmatch_service which imported MODEL_NAME
 MODEL_NAME = EXTRACTION_MODEL
@@ -66,8 +66,8 @@ _TASK_CONFIG: dict[str, dict] = {
     },
     "synthesis": {
         "primary":          SYNTHESIS_MODEL,
-        # Safe Gemini fallback — never use EXTRACTION_MODEL which may be a Groq model.
-        "fallback":         "gemini-2.0-flash",
+        # gemini-2.5-flash-lite: separate quota pool from 2.0-flash, available on this API key.
+        "fallback":         "gemini-2.5-flash-lite",
         "temperature":      0.2,
         "top_p":            0.9,
         "top_k":            40,
