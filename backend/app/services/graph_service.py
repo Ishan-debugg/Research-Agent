@@ -101,6 +101,15 @@ async def build_knowledge_graph(
       2. Groq primary (llama-3.3-70b-versatile) → ~2-4s, reliable.
       3. Gemini fallback (SYNTHESIS_MODEL)       → if Groq fails.
     """
+    if not papers:
+        logger.warning("[graph] build_knowledge_graph called with 0 papers — returning empty graph.")
+        return KnowledgeGraph(
+            nodes=[],
+            edges=[],
+            open_problems=["No papers were successfully extracted. Check extraction errors above."],
+            summary="Graph synthesis requires at least one successfully extracted paper.",
+        )
+
     query_hash = _make_query_hash(papers)
 
     cached = cache_service.get_graph(query_hash)

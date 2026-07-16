@@ -2,10 +2,18 @@
 # Usage:
 #   docker compose -f docker-compose.prod.yml up --build -d
 #
-# Prerequisites:
-#   1. Create backend/.env with your production secrets (GEMINI_API_KEY, API_AUTH_KEY)
-#   2. Set NEXT_PUBLIC_API_URL to point to /api (Nginx rewrites the prefix)
-#   3. Install Docker Desktop or Docker Engine with Compose v2
+# Required backend/.env vars:
+#   GEMINI_API_KEY=...          (Google Gemini API key)
+#   GROQ_API_KEY=...            (Groq API key)
+#   GROQ_MODEL=llama-3.1-8b-instant
+#   GRAPH_MODEL=llama-3.3-70b-versatile
+#   SYNTHESIS_MODEL=gemini-2.0-flash
+#   ENVIRONMENT=production      (disables /docs, /redoc, /openapi.json)
+#   ALLOWED_ORIGINS=https://yourdomain.com   (comma-separated, no trailing /)
+#   API_AUTH_KEY=<random-secret> (optional but recommended)
+#
+# Frontend env (set via shell or .env.local before building):
+#   NEXT_PUBLIC_API_URL=https://yourdomain.com/api
 #
 # Services exposed to the host:
 #   :80 → Nginx (public entry point for both frontend and API)

@@ -11,6 +11,7 @@ import json
 import logging
 
 from app.services import gemini_client
+from app.services import groq_client
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,16 @@ async def match_tech_stack(papers, tech_stack):
         tech_stack=", ".join(tech_stack),
         papers_block=_build_papers_block(papers),
     )
-    raw = await gemini_client.call_gemini("extraction", prompt, semaphore=None)
+    TECH_SYSTEM = (
+        "You are a research relevance expert. Assess how relevant ML papers are "
+        "to a given tech stack. Always respond with valid JSON only — "
+        "no markdown fences, no preamble."
+    )
+    raw = await groq_client.call_groq(
+        prompt,
+        semaphore=None,
+        system_message=TECH_SYSTEM,
+    )
     try:
         data = json.loads(gemini_client.sanitize_json(raw))
     except json.JSONDecodeError as e:
