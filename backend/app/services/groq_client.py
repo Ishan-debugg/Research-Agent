@@ -57,7 +57,7 @@ def _is_rate_limit(exc: Exception) -> bool:
     return "429" in msg or "rate_limit" in msg or "too many requests" in msg
 
 
-async def _call_groq_async(prompt: str, system_message: str | None = None) -> str:
+async def _call_groq_async(prompt: str, system_message: str | None = None, model: str | None = None) -> str:
     """
     Native async Groq chat-completions call via httpx.AsyncClient.
     No thread-pool wrapping — true async I/O keeps the event loop free.
@@ -73,7 +73,7 @@ async def _call_groq_async(prompt: str, system_message: str | None = None) -> st
     )
 
     payload = {
-        "model": GROQ_MODEL,
+        "model": model or GROQ_MODEL,   # ← uses override if provided
         "messages": [
             {"role": "system", "content": system_message or default_system},
             {"role": "user", "content": prompt},
@@ -127,7 +127,7 @@ async def call_groq(
         reraise=True,
     )
     async def _attempt() -> str:
-        return await _call_groq_async(prompt, system_message)
+        return await _call_groq_async(prompt, system_message, model=target_model)
 
     class _null_ctx:
         async def __aenter__(self): return self

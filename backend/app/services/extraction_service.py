@@ -197,6 +197,33 @@ def _base_id(arxiv_id: str) -> str:
     return arxiv_id.split("v")[0] if "v" in arxiv_id else arxiv_id
 
 
+def _coerce_extraction_item(item: dict) -> dict:
+    """Stringify any dict/list values that should be plain strings.
+
+    The LLM occasionally returns nested dicts for fields like 'results' or
+    'other_metrics'. Pydantic's field_validator in ExtractedPaper will also
+    coerce these, but this helper makes the raw dict clean before storage.
+    """
+    string_fields = {
+        "problem", "method", "dataset", "eval_method", "results", "contribution",
+        "limitations", "prerequisites", "real_world_impact", "audience",
+        "precision", "recall", "f1_score", "accuracy", "auc",
+        "bleu", "rouge", "other_metrics", "baseline",
+    }
+    cleaned = dict(item)
+    for key in string_fields:
+        val = cleaned.get(key)
+        if val is None:
+            cleaned[key] = "Not reported"
+        elif isinstance(val, dict):
+            cleaned[key] = "; ".join(f"{k}: {v}" for k, v in val.items())
+        elif isinstance(val, list):
+            cleaned[key] = "; ".join(str(x) for x in val)
+        elif not isinstance(val, str):
+            cleaned[key] = str(val)
+    return cleaned
+
+
 def _build_papers_block(papers, texts: dict[str, str]) -> str:
     blocks = []
     for p in papers:
@@ -253,6 +280,7 @@ async def _extract_one_solo(
     # Ensure arxiv_id matches our paper (model may omit or alter it)
     data["arxiv_id"] = paper.arxiv_id
     data.setdefault("title", paper.title)
+    data = _coerce_extraction_item(data)
 
     try:
         ep = ExtractedPaper(**data)
@@ -349,6 +377,7 @@ async def extract_papers(
         item.setdefault("title", paper.title if paper else raw_id)
 
         try:
+            item = _coerce_extraction_item(item)
             ep = ExtractedPaper(**item)
             cache_service.set_extraction(ep.arxiv_id, item)
             results.append(ep)

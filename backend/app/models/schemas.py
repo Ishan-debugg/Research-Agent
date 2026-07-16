@@ -6,8 +6,8 @@ Changes:
   - 'errors' carries details about papers that failed extraction (graceful degradation).
   - 'request_id' is a UUID assigned by the middleware for traceability.
 """
-from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Dict, Optional, Any
 
 
 class PaperCandidate(BaseModel):
@@ -18,6 +18,26 @@ class PaperCandidate(BaseModel):
     published: str
     pdf_url: str
     score: float = None
+
+
+def _coerce_str(v: Any) -> str:
+    """Coerce any non-string value to a readable string.
+    
+    LLMs occasionally return dicts or lists for text fields (e.g. results,
+    method). Without coercion pydantic raises a validation error and the
+    entire paper is silently dropped. This validator makes every string field
+    fault-tolerant.
+    """
+    if v is None:
+        return "Not reported"
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        # Convert {'metric': 'value', ...} to a readable string
+        return "; ".join(f"{k}: {v2}" for k, v2 in v.items())
+    if isinstance(v, list):
+        return "; ".join(str(x) for x in v)
+    return str(v)
 
 
 class ExtractedPaper(BaseModel):
@@ -42,6 +62,19 @@ class ExtractedPaper(BaseModel):
     rouge: str = "Not reported"
     other_metrics: str = "Not reported"
     baseline: str = "Not reported"
+
+    # Coerce all text fields — prevents pydantic ValidationError when LLM
+    # returns a nested dict/list instead of a plain string.
+    @field_validator(
+        "problem", "method", "dataset", "eval_method", "results", "contribution",
+        "limitations", "prerequisites", "real_world_impact", "audience",
+        "precision", "recall", "f1_score", "accuracy", "auc",
+        "bleu", "rouge", "other_metrics", "baseline",
+        mode="before",
+    )
+    @classmethod
+    def coerce_to_str(cls, v: Any) -> str:
+        return _coerce_str(v)
 
 
 class PaperResult(BaseModel):
