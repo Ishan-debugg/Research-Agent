@@ -91,13 +91,16 @@ for handler in logging.getLogger().handlers:
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
+_is_prod = os.environ.get("ENVIRONMENT", "development").lower() == "production"
+
 app = FastAPI(
     title="Research Copilot",
     description="AI-powered research paper analysis pipeline with semantic reranking, "
                 "structured extraction, and knowledge graph synthesis.",
     version="2.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=None if _is_prod else "/docs",
+    redoc_url=None if _is_prod else "/redoc",
+    openapi_url=None if _is_prod else "/openapi.json",
 )
 
 # --- Rate Limiting (10/min per IP) ---
