@@ -32,9 +32,17 @@ from app.services.gemini_client import sanitize_json  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL   = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+
+def _get_groq_api_key() -> str:
+    """Read GROQ_API_KEY lazily so load_dotenv() has time to populate os.environ."""
+    return os.environ.get("GROQ_API_KEY", "")
+
+
+def _get_groq_model() -> str:
+    """Read GROQ_MODEL lazily so load_dotenv() has time to populate os.environ."""
+    return os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 
 # Groq free tier: 30 req/min, 14 400 req/day
 _TIMEOUT = httpx.Timeout(60.0, connect=10.0)
@@ -62,7 +70,8 @@ async def _call_groq_async(prompt: str, system_message: str | None = None, model
     Native async Groq chat-completions call via httpx.AsyncClient.
     No thread-pool wrapping — true async I/O keeps the event loop free.
     """
-    if not GROQ_API_KEY:
+    api_key = _get_groq_api_key()
+    if not api_key:
         raise RuntimeError("GROQ_API_KEY not set in environment.")
 
     default_system = (
@@ -73,7 +82,7 @@ async def _call_groq_async(prompt: str, system_message: str | None = None, model
     )
 
     payload = {
-        "model": model or GROQ_MODEL,   # ← uses override if provided
+        "model": model or _get_groq_model(),   # ← uses override if provided
         "messages": [
             {"role": "system", "content": system_message or default_system},
             {"role": "user", "content": prompt},
@@ -83,7 +92,7 @@ async def _call_groq_async(prompt: str, system_message: str | None = None, model
     }
 
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
@@ -118,7 +127,7 @@ async def call_groq(
         system_message:  Custom system prompt (defaults to extraction assistant).
         model_override:  Override GROQ_MODEL for this call (e.g. graph synthesis).
     """
-    target_model = model_override or GROQ_MODEL
+    target_model = model_override or _get_groq_model()
 
     @retry(
         retry=retry_if_exception(_is_rate_limit),

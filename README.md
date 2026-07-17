@@ -1,12 +1,24 @@
+<div align="center">
+
 # Research Copilot
 
-> Map an entire ML research field from a single search query.
+**Map an entire ML research field from a single search query.**
 
 Research Copilot is a full-stack RAG pipeline that retrieves papers from arXiv, parses their full PDFs, extracts structured information via Gemini, and synthesizes a knowledge graph showing how papers relate — all in one search.
 
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=flat&logo=fastapi)](https://fastapi.tiangolo.com)
+[![Next.js](https://img.shields.io/badge/Next.js-16-black?style=flat&logo=next.js)](https://nextjs.org)
+[![Gemini](https://img.shields.io/badge/Gemini-2.5_Flash_Lite-4285F4?style=flat&logo=google)](https://aistudio.google.com)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat&logo=docker)](https://docker.com)
+[![License](https://img.shields.io/badge/License-MIT-yellow?style=flat)](LICENSE)
+
+</div>
+
 ---
 
-## What it does
+## Overview
+
+<img src="./assets/screenshot-home.png" alt="Research Copilot Home Page" width="100%">
 
 Enter any ML topic in plain English. The pipeline runs in the background:
 
@@ -25,6 +37,36 @@ Every stage streams progress back to the UI in real time via SSE. Results are ca
 
 ---
 
+## Screenshots
+
+### Real-time Pipeline Progress
+<img src="./assets/screenshot-processing.png" alt="Processing Page — Real-time SSE pipeline progress" width="100%">
+
+*Each stage completes in real time with actual backend timings streamed via SSE. The macOS-style dashboard shows candidates retrieved, top-k selected, and elapsed time live.*
+
+---
+
+### Results — Ranked Papers with Structured Extraction
+<img src="./assets/screenshot-results.png" alt="Results Page — Ranked papers with structured extraction" width="100%">
+
+*Papers ranked #1–5 by relevance score. Click any paper to expand Problem, Method, Why It Matters, and Audience in a 2×2 card grid. Contribution, Limitations, and Prerequisites appear below.*
+
+---
+
+### Benchmark Extracted
+<img src="./assets/screenshot-benchmark.png" alt="Benchmark Extracted Table" width="100%">
+
+*Only shows metrics explicitly reported in the paper text — never estimated. Sortable by any column. Baseline comparison included where available.*
+
+---
+
+### Knowledge Graph
+<img src="./assets/screenshot-graph.png" alt="Interactive Knowledge Graph — React Flow" width="100%">
+
+*Inter-paper relationships (builds_on, contradicts, alternative_approach, shares_problem) rendered as an interactive node graph. Click any node to open a summary panel.*
+
+---
+
 ## Features
 
 - **Real-time pipeline progress** — SSE streaming shows each stage completing with actual backend timings
@@ -40,7 +82,7 @@ Every stage streams progress back to the UI in real time via SSE. Results are ca
 
 ---
 
-## Tech stack
+## Tech Stack
 
 | Layer | Stack |
 |---|---|
@@ -58,7 +100,7 @@ Every stage streams progress back to the UI in real time via SSE. Results are ca
 
 ---
 
-## Project structure
+## Project Structure
 
 ```
 research-mapper/
@@ -104,12 +146,13 @@ research-mapper/
 │   ├── lib/
 │   │   └── historyStore.js          # localStorage read/write for search history
 │   └── Dockerfile
+├── assets/                          # Screenshots for README
 └── docker-compose.yml
 ```
 
 ---
 
-## Local setup (without Docker)
+## Local Setup (without Docker)
 
 ### Prerequisites
 - Python 3.11+
@@ -145,7 +188,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ---
 
-## Docker setup (recommended for testing production build)
+## Docker Setup
 
 ```bash
 # 1. Copy and fill in your env file
@@ -156,15 +199,17 @@ cp backend/.env.example backend/.env
 docker compose up --build
 ```
 
-- Frontend: [http://localhost:3000](http://localhost:3000)
-- Backend: [http://localhost:8000](http://localhost:8000)
-- Health check: [http://localhost:8000/health](http://localhost:8000/health)
+| Service | URL |
+|---|---|
+| Frontend | http://localhost:3000 |
+| Backend | http://localhost:8000 |
+| Health check | http://localhost:8000/health |
 
 > **Note:** The backend image uses a CPU-only PyTorch wheel (`torch+cpu`) to avoid pulling ~1.5GB of unused CUDA libraries. First build takes 3–5 minutes; subsequent builds are cached.
 
 ---
 
-## Environment variables
+## Environment Variables
 
 Create `backend/.env` from `backend/.env.example`:
 
@@ -176,16 +221,17 @@ GEMINI_API_KEY=your_key_here
 GEMINI_MODEL=gemini-2.5-flash-lite
 ARXIV_CANDIDATE_COUNT=20
 TOP_K_PAPERS=5
+ALLOWED_ORIGINS=http://localhost:3000
 ```
 
-Frontend env (create `frontend/.env.local`):
+Frontend env — create `frontend/.env.local`:
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
 ---
 
-## API endpoints
+## API Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -195,9 +241,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 | `POST` | `/tech-match` | On-demand tech stack alignment for a set of papers |
 | `POST` | `/cache/clear` | Manually invalidate all cached results |
 
-### SSE event format (`/search/stream`)
-
-The stream emits three event types:
+### SSE Event Format (`/search/stream`)
 
 ```
 event: stage
@@ -215,25 +259,7 @@ data: {"message": "...error description..."}
 
 ---
 
-## Rate limits and caching
-
-The free Gemini tier is limited. The pipeline uses exactly **2 Gemini calls per fresh search**:
-
-1. One batched extraction call (all 5 papers in a single prompt)
-2. One knowledge graph synthesis call
-
-**SQLite caching** at three levels:
-- Per arXiv paper text (avoids re-downloading PDFs)
-- Per paper-set graph (avoids re-synthesizing the same combination)
-- Per query result (serves complete cached response in <100ms)
-
-Repeat searches cost **0 Gemini calls**.
-
-A `asyncio.Semaphore` caps concurrent Gemini requests at 3. On `429 ResourceExhausted`, the client automatically retries on a fallback model before propagating the error.
-
----
-
-## Pipeline performance
+## Pipeline Performance
 
 Typical timings on a fresh (uncached) query:
 
@@ -251,6 +277,23 @@ All CPU-bound and blocking I/O runs in `asyncio.get_running_loop().run_in_execut
 
 ---
 
+## Rate Limits and Caching
+
+The pipeline uses exactly **2 Gemini calls per fresh search**:
+1. One batched extraction call (all 5 papers in a single prompt)
+2. One knowledge graph synthesis call
+
+**SQLite caching at three levels:**
+- Per arXiv paper text — avoids re-downloading PDFs
+- Per paper-set graph — avoids re-synthesizing the same combination
+- Per query result — serves complete cached response in <100ms
+
+Repeat searches cost **0 Gemini calls.**
+
+An `asyncio.Semaphore` caps concurrent Gemini requests at 3. On `429 ResourceExhausted`, the client automatically retries on a fallback model before propagating the error.
+
+---
+
 ## Acknowledgements
 
 - [arXiv](https://arxiv.org) for open access paper metadata and PDFs
@@ -258,3 +301,9 @@ All CPU-bound and blocking I/O runs in `asyncio.get_running_loop().run_in_execut
 - [sentence-transformers](https://www.sbert.net) for the CrossEncoder reranking model
 - [React Flow](https://reactflow.dev) for the knowledge graph visualization
 - [PyMuPDF](https://pymupdf.readthedocs.io) for PDF text extraction
+
+---
+
+<div align="center">
+  <sub>Built by <a href="https://github.com/Ishan-debugg">Ishan Tarkas</a></sub>
+</div>

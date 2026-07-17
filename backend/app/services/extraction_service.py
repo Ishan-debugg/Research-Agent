@@ -35,7 +35,7 @@ from app.services import cache_service
 from app.services import gemini_client
 from app.services import groq_client
 
-MODEL_NAME = groq_client.GROQ_MODEL
+MODEL_NAME = groq_client._get_groq_model()
 
 logger = logging.getLogger(__name__)
 
