@@ -1,6 +1,6 @@
 <div align="center">
 
-# Research Copilot
+# Research Copilot.
 
 **Map an entire ML research field from a single search query.**
 
