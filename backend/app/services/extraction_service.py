@@ -1,5 +1,5 @@
 """
-Stage 4: Structured extraction via Groq Mixtral (fast) with Gemini as fallback.
+Stage 4: Structured extraction via Groq (fast) with Gemini as fallback.
 
 Key features:
   1. FEW-SHOT PROMPTING — 2 high-quality examples in every prompt for schema
@@ -8,31 +8,32 @@ Key features:
   2. SQLITE CACHE — Each paper's extraction is cached by arxiv_id. Cache hits
      skip the API call entirely (0 tokens consumed).
 
-  3. SMART BATCH + PER-PAPER FALLBACK:
-     a. All cache-miss papers are sent in ONE batched call (fast path).
-     b. Any paper omitted from the batch response is retried individually.
-        This guarantees no paper is silently dropped.
-     c. ID matching is fuzzy (strips version suffix).
+  3. CONCURRENT PER-PAPER CALLS — extract_papers() fires one Groq call PER
+     PAPER, run concurrently via asyncio.gather and bounded by an
+     asyncio.Semaphore (GROQ_CONCURRENCY, default: 5). This replaces the old
+     "stuff every paper into one giant prompt" approach, which was prone to
+     cross-paper contamination (the model mixing up facts between Paper A and
+     Paper B). Because calls run in parallel, wall-clock time is roughly the
+     time of a SINGLE paper's generation rather than growing with paper count.
 
   4. DETERMINISTIC TEMPERATURE — temperature=0.0 via groq_client.
 
-  5. TEXT CAPPED AT 8k chars/paper.
+  5. TEXT CAPPED AT 8k chars/paper — covers abstract + intro + methods/results
+     for most arXiv papers, which is where the extraction fields live.
 
-  6. GRACEFUL DEGRADATION — per-paper try/except in the parse loop.
+  6. GRACEFUL DEGRADATION — per-paper try/except in every call. One bad paper
+     never kills the entire batch. Failed papers are logged and skipped with
+     an error list returned alongside successful extractions.
 
-  Model: Groq Mixtral-8x7b (3-4x faster than Gemini flash for extraction).
-  Graph synthesis remains on Gemini 2.5 Pro (see graph_service.py).
+  Model: Groq llama-3.1-8b-instant (primary), Gemini as fallback.
 """
 
 import asyncio
 import json
 import logging
 
-import google.generativeai as genai
-
 from app.models.schemas import ExtractedPaper
 from app.services import cache_service
-from app.services import gemini_client
 from app.services import groq_client
 
 MODEL_NAME = groq_client._get_groq_model()
@@ -127,15 +128,14 @@ def _render_examples() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Prompt templates — one for batch, one for single paper
+# Prompt template — single-paper focused (used for concurrent per-paper calls)
 # ---------------------------------------------------------------------------
 
-EXTRACTION_PROMPT_TEMPLATE = """\
-You are extracting structured information from machine learning research papers.
+SINGLE_PAPER_PROMPT_TEMPLATE = """\
+You are extracting structured information from ONE machine learning research paper.
 
-For EACH paper provided, extract the following fields exactly.
-IMPORTANT: You MUST return one JSON object for EVERY paper listed. Do NOT skip
-any paper. If you cannot find a field, use "Not reported" or "Not specified".
+Extract these fields exactly. Follow the examples below — match field names,
+use "Not reported" for absent metrics, and never invent numbers not stated in the text.
 
 Fields to extract:
 - problem: what problem the paper addresses (1-2 sentences)
@@ -154,28 +154,20 @@ Fields to extract:
 
 NEVER estimate or invent numeric values. If a number is not in the text, output "Not reported".
 
-Respond ONLY with a JSON array containing exactly {count} objects — no markdown fences, no preamble.
-Each element must have exactly these keys:
-arxiv_id, title, problem, method, dataset, eval_method, results, contribution,
+Respond with a SINGLE JSON object (not an array) — no markdown fences, no preamble.
+Keys: arxiv_id, title, problem, method, dataset, eval_method, results, contribution,
 limitations, prerequisites, real_world_impact, audience, precision, recall,
 f1_score, accuracy, auc, bleu, rouge, other_metrics, baseline
 
-PAPERS:
-{papers_block}
-"""
+========================================
+FEW-SHOT EXAMPLES
+========================================
 
-# Simpler single-paper prompt for individual retries — no array, just one object
-SINGLE_PAPER_PROMPT_TEMPLATE = """\
-You are extracting structured information from ONE machine learning research paper.
+{examples}
 
-Extract these fields exactly. Use "Not reported" for missing metrics.
-Never invent numeric values.
-
-Fields: problem, method, dataset, eval_method, results, contribution,
-limitations, prerequisites, real_world_impact, audience, precision, recall,
-f1_score, accuracy, auc, bleu, rouge, other_metrics, baseline
-
-Respond with a SINGLE JSON object (not an array).
+========================================
+Now process this paper:
+========================================
 
 PAPER:
 arxiv_id: {arxiv_id}
@@ -189,12 +181,10 @@ text:
 # Helpers
 # ---------------------------------------------------------------------------
 
-MAX_CHARS_PER_PAPER = 3_000  # Keeps 5-paper batch safely under Groq free-tier 6K TPM limit
-
-
-def _base_id(arxiv_id: str) -> str:
-    """Strip version suffix for fuzzy matching: '2301.12345v2' → '2301.12345'."""
-    return arxiv_id.split("v")[0] if "v" in arxiv_id else arxiv_id
+# 8k chars covers abstract + intro + most of methods/results for a typical
+# arXiv paper, where the fields we extract live. Increased from 3k which
+# barely covered the abstract and caused most fields to be "Not reported".
+MAX_CHARS_PER_PAPER = 8_000
 
 
 def _coerce_extraction_item(item: dict) -> dict:
@@ -224,36 +214,23 @@ def _coerce_extraction_item(item: dict) -> dict:
     return cleaned
 
 
-def _build_papers_block(papers, texts: dict[str, str]) -> str:
-    blocks = []
-    for p in papers:
-        text = texts.get(p.arxiv_id, p.abstract)
-        truncated = text[:MAX_CHARS_PER_PAPER]
-        blocks.append(
-            "---\narxiv_id: " + p.arxiv_id
-            + "\ntitle: " + p.title
-            + "\ntext:\n" + truncated
-            + "\n"
-        )
-    return "\n".join(blocks)
-
-
 # ---------------------------------------------------------------------------
-# Single-paper fallback extractor
+# Per-paper extraction (concurrent)
 # ---------------------------------------------------------------------------
 
-async def _extract_one_solo(
+async def _extract_one(
     paper,
     texts: dict[str, str],
     semaphore: asyncio.Semaphore | None,
 ) -> tuple["ExtractedPaper | None", dict | None]:
     """
-    Extract a single paper with its own dedicated Gemini call.
-    Used as fallback when the batch call omits a paper.
-    Never raises — converts all failures to error dicts.
+    Extract a single paper with its own dedicated Groq call.
+    Never raises — converts all failures to error dicts so asyncio.gather()
+    over many of these can't be torpedoed by one bad paper.
     """
     text = texts.get(paper.arxiv_id, paper.abstract)[:MAX_CHARS_PER_PAPER]
     prompt = SINGLE_PAPER_PROMPT_TEMPLATE.format(
+        examples=_render_examples(),
         arxiv_id=paper.arxiv_id,
         title=paper.title,
         text=text,
@@ -262,20 +239,20 @@ async def _extract_one_solo(
     try:
         raw = await groq_client.call_groq(prompt, semaphore)
     except Exception as e:
-        logger.error("[extraction] Solo retry failed for %s: %s", paper.arxiv_id, e)
+        logger.error("[extraction] Groq call failed for %s: %s", paper.arxiv_id, e)
         return None, {"arxiv_id": paper.arxiv_id, "title": paper.title, "error": str(e)}
 
     try:
         data = json.loads(groq_client.sanitize_json(raw))
     except json.JSONDecodeError as e:
-        logger.error("[extraction] Solo JSON parse error for %s: %s", paper.arxiv_id, e)
+        logger.error("[extraction] JSON parse error for %s: %s\nRaw: %.300s", paper.arxiv_id, e, raw)
         return None, {"arxiv_id": paper.arxiv_id, "title": paper.title, "error": f"JSON parse error: {e}"}
 
-    # Normalise: solo prompt returns object, but sometimes still wraps in array
+    # Solo prompt returns object, but sometimes still wraps in array
     if isinstance(data, list):
         data = data[0] if data else None
     if not data or not isinstance(data, dict):
-        return None, {"arxiv_id": paper.arxiv_id, "title": paper.title, "error": "Empty solo response"}
+        return None, {"arxiv_id": paper.arxiv_id, "title": paper.title, "error": "Empty extraction response"}
 
     # Ensure arxiv_id matches our paper (model may omit or alter it)
     data["arxiv_id"] = paper.arxiv_id
@@ -285,11 +262,18 @@ async def _extract_one_solo(
     try:
         ep = ExtractedPaper(**data)
         cache_service.set_extraction(ep.arxiv_id, data)
-        logger.info("[extraction] Solo retry SUCCESS for %s", paper.arxiv_id)
         return ep, None
     except Exception as e:
-        logger.warning("[extraction] Solo parse error for %s: %s", paper.arxiv_id, e)
-        return None, {"arxiv_id": paper.arxiv_id, "title": paper.title, "error": f"Parse error: {e}"}
+        arxiv_id = data.get("arxiv_id", paper.arxiv_id)
+        logger.warning(
+            "[extraction] Failed to parse extraction for %s: %s — skipping.",
+            arxiv_id, e,
+        )
+        return None, {
+            "arxiv_id": arxiv_id,
+            "title": data.get("title", paper.title),
+            "error": f"Extraction parse error: {e}",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -304,19 +288,24 @@ async def extract_papers(
     """
     Async structured extraction with per-paper SQLite caching.
 
-    Strategy:
-      1. Cache hits → instant (0 Gemini calls).
-      2. Cache misses → ONE batched Gemini call (all papers in one prompt).
-      3. Any paper Gemini omits from its batch response → individual retry call.
-         This guarantees no paper is silently dropped.
+    Papers already in the cache skip the Groq call entirely. Cache-miss
+    papers are each extracted with their OWN concurrent Groq call — run in
+    parallel via asyncio.gather and bounded by `semaphore` (GROQ_CONCURRENCY,
+    default 5) — instead of the old approach of batching every paper into a
+    single giant prompt. This avoids cross-paper contamination (the model
+    mixing up facts between papers) and, because the calls run in parallel,
+    typically finishes in roughly the time of ONE paper's generation rather
+    than growing with the number of papers.
 
-    Returns (successful_extractions, errors).
+    Returns:
+        Tuple of (successful_extractions, errors) where errors is a list of
+        {"arxiv_id": ..., "error": ...} dicts for papers that failed extraction.
     """
     results: list[ExtractedPaper] = []
     errors: list[dict] = []
     uncached_papers = []
 
-    # ── Stage A: Serve cached extractions ────────────────────────────────────
+    # --- Stage A: Serve cached extractions ---
     for p in papers:
         cached = cache_service.get_extraction(p.arxiv_id)
         if cached:
@@ -333,91 +322,24 @@ async def extract_papers(
         return results, errors
 
     logger.info(
-        "[extraction] %d cache hits, %d cache misses — batched call for %d papers.",
+        "[extraction] %d cache hits, %d cache misses — firing %d concurrent per-paper Groq calls.",
         len(results), len(uncached_papers), len(uncached_papers),
     )
 
-    # ── Stage B: Single batched Gemini call ──────────────────────────────────
-    prompt = EXTRACTION_PROMPT_TEMPLATE.format(
-        count=len(uncached_papers),
-        papers_block=_build_papers_block(uncached_papers, texts),
+    # --- Stage B: One concurrent Groq call PER paper, bounded by semaphore ---
+    outcomes = await asyncio.gather(
+        *[_extract_one(p, texts, semaphore) for p in uncached_papers]
     )
 
-    batch_failed_all = False
-    returned_data: list[dict] = []
-
-    try:
-        raw = await groq_client.call_groq(prompt, semaphore)
-        data = json.loads(groq_client.sanitize_json(raw))
-        if isinstance(data, dict):
-            data = [data]
-        if isinstance(data, list):
-            returned_data = [item for item in data if isinstance(item, dict)]
-        else:
-            logger.error("[extraction] Unexpected batch response shape: %s", type(data))
-            batch_failed_all = True
-    except Exception as e:
-        logger.error("[extraction] Batched Groq call failed: %s", e)
-        batch_failed_all = True
-
-    # ── Stage C: Parse batch results ─────────────────────────────────────────
-    # Build fuzzy ID lookup: base_id → paper object (handles version suffixes)
-    paper_by_base_id = {_base_id(p.arxiv_id): p for p in uncached_papers}
-    successfully_extracted_ids: set[str] = set()
-
-    for item in returned_data:
-        raw_id   = item.get("arxiv_id", "")
-        # Try exact match first, then base-id fuzzy match
-        paper = (
-            next((p for p in uncached_papers if p.arxiv_id == raw_id), None)
-            or paper_by_base_id.get(_base_id(raw_id))
-        )
-        if paper:
-            item["arxiv_id"] = paper.arxiv_id   # normalise to our canonical ID
-        item.setdefault("title", paper.title if paper else raw_id)
-
-        try:
-            item = _coerce_extraction_item(item)
-            ep = ExtractedPaper(**item)
-            cache_service.set_extraction(ep.arxiv_id, item)
+    for ep, err in outcomes:
+        if ep is not None:
             results.append(ep)
-            successfully_extracted_ids.add(ep.arxiv_id)
-        except Exception as e:
-            arxiv_id = item.get("arxiv_id", raw_id)
-            logger.warning("[extraction] Parse error for %s: %s", arxiv_id, e)
-            errors.append({"arxiv_id": arxiv_id, "title": item.get("title", ""), "error": f"Parse error: {e}"})
-
-    # ── Stage D: Retry papers Gemini omitted from the batch ──────────────────
-    missing = [
-        p for p in uncached_papers
-        if p.arxiv_id not in successfully_extracted_ids
-    ]
-
-    if missing:
-        if batch_failed_all:
-            logger.warning(
-                "[extraction] Batch call failed entirely — retrying all %d papers individually.", len(missing)
-            )
-        else:
-            logger.warning(
-                "[extraction] Batch omitted %d/%d papers — retrying individually: %s",
-                len(missing), len(uncached_papers),
-                [p.arxiv_id for p in missing],
-            )
-
-        # Run individual retries concurrently (bounded by semaphore)
-        retry_outcomes = await asyncio.gather(
-            *[_extract_one_solo(p, texts, semaphore) for p in missing]
-        )
-        for ep, err in retry_outcomes:
-            if ep is not None:
-                results.append(ep)
-            elif err is not None:
-                errors.append(err)
+        elif err is not None:
+            errors.append(err)
 
     if errors:
         logger.warning(
-            "[extraction] Final: %d/%d papers extracted, %d failed.",
+            "[extraction] %d/%d papers extracted successfully, %d failed.",
             len(results), len(papers), len(errors),
         )
     else:

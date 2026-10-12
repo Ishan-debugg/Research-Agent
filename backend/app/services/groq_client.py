@@ -88,7 +88,7 @@ async def _call_groq_async(prompt: str, system_message: str | None = None, model
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.0,
-        "max_tokens": 4096,
+        "max_tokens": 8192,
     }
 
     headers = {

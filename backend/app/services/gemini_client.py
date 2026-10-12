@@ -1,14 +1,15 @@
 """
-gemini_client.py — Central Gemini model router with fallback and concurrency control.
+gemini_client.py — Gemini API client, used as FALLBACK for extraction and
+PRIMARY for graph synthesis when Groq is unavailable.
 
 Architecture:
-  Two model tiers are configured via environment variables:
-    EXTRACTION_MODEL  (default: gemini-2.5-flash)  — strong reading comprehension for dense academic text
-    SYNTHESIS_MODEL   (default: gemini-2.5-pro)     — best available reasoning for graph/summary
+  Primary extraction:  Groq llama-3.1-8b-instant (via groq_client.py)
+  Extraction fallback: Gemini (this module) — used only when Groq fails
+  Graph synthesis:     Groq llama-3.3-70b-versatile primary, Gemini fallback
 
-  Task routing:
-    "extraction" → EXTRACTION_MODEL  (temperature=0.0, top_k=1, top_p=1.0)
-    "synthesis"  → SYNTHESIS_MODEL   (temperature=0.2, top_k=40, top_p=0.9)
+  Model tiers configured via environment variables:
+    EXTRACTION_MODEL  (default: gemini-2.5-flash)  — Gemini fallback for extraction
+    SYNTHESIS_MODEL   (default: gemini-2.0-flash)   — Gemini fallback for graph
 
   Fallback strategy:
     On HTTP 429 (ResourceExhausted) the router automatically retries with

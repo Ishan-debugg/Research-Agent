@@ -33,7 +33,7 @@ import logging
 import os
 import sqlite3
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def _is_expired(created_at_iso: str, ttl_hours: int) -> bool:
     """Check if a cache entry has exceeded its TTL."""
     try:
         created = datetime.fromisoformat(created_at_iso)
-        return datetime.utcnow() - created > timedelta(hours=ttl_hours)
+        return datetime.now(timezone.utc) - created > timedelta(hours=ttl_hours)
     except (ValueError, TypeError):
         # If the timestamp is malformed, treat as expired
         return True
@@ -151,7 +151,7 @@ def prune_expired_entries() -> dict:
     Delete all entries that have exceeded their TTL from every table.
     Returns counts of deleted rows per table for observability.
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     deleted = {}
     specs = [
         ("paper_texts",       "arxiv_id",   PAPER_TEXT_TTL_HOURS),
@@ -239,7 +239,7 @@ def set_paper_text(arxiv_id: str, text: str) -> None:
     with _lock:
         _get_conn().execute(
             "INSERT OR REPLACE INTO paper_texts (arxiv_id, text, created_at) VALUES (?, ?, ?)",
-            (arxiv_id, text, datetime.utcnow().isoformat()),
+            (arxiv_id, text, datetime.now(timezone.utc).isoformat()),
         )
         _get_conn().commit()
     logger.info("[cache] TEXT SET  — %s (%d chars)", arxiv_id, len(text))
@@ -273,7 +273,7 @@ def set_extraction(arxiv_id: str, data: dict) -> None:
     with _lock:
         _get_conn().execute(
             "INSERT OR REPLACE INTO paper_extractions (arxiv_id, data_json, created_at) VALUES (?, ?, ?)",
-            (arxiv_id, json.dumps(data), datetime.utcnow().isoformat()),
+            (arxiv_id, json.dumps(data), datetime.now(timezone.utc).isoformat()),
         )
         _get_conn().commit()
     logger.info("[cache] EXTRACTION SET  — %s", arxiv_id)
@@ -307,7 +307,7 @@ def set_graph(query_hash: str, data: dict) -> None:
     with _lock:
         _get_conn().execute(
             "INSERT OR REPLACE INTO graph_cache (query_hash, data_json, created_at) VALUES (?, ?, ?)",
-            (query_hash, json.dumps(data), datetime.utcnow().isoformat()),
+            (query_hash, json.dumps(data), datetime.now(timezone.utc).isoformat()),
         )
         _get_conn().commit()
     logger.info("[cache] GRAPH SET  — hash=%s", query_hash[:12])

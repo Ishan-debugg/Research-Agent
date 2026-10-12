@@ -498,7 +498,7 @@ async def search(request: Request, query: str):  # noqa: C901
 
 
 @app.get("/search/stream")
-@limiter.limit("3/minute")
+@limiter.limit("10/minute")
 async def search_stream(request: Request, query: str):
     """
     SSE streaming endpoint — sends real-time stage progress events.
@@ -580,7 +580,7 @@ async def search_stream(request: Request, query: str):
             # --- Stage 2: Rerank ---
             yield _sse_event("stage", {
                 "stage": "reranking", "progress": 2, "total": 5,
-                "message": "Semantic reranking with CrossEncoder...",
+                "message": "Semantic reranking...",
             })
 
             t1 = time.perf_counter()
