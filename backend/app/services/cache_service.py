@@ -7,8 +7,8 @@ tables map directly to the three expensive pipeline stages we want to
 short-circuit on repeated queries:
 
   paper_texts       → Stage 3 output  (PDF extraction)
-  paper_extractions → Stage 4 output  (Gemini structured extraction)
-  graph_cache       → Stage 5 output  (Gemini knowledge graph)
+  paper_extractions → Stage 4 output  (Groq structured extraction)
+  graph_cache       → Stage 5 output  (Groq/Gemini knowledge graph)
 
 Cache keys:
   paper_texts / paper_extractions : arxiv_id  (e.g. "2310.01558v2")

@@ -229,8 +229,8 @@ async def _startup():
     _gemini_semaphore = asyncio.Semaphore(GEMINI_CONCURRENCY)
     _groq_semaphore   = asyncio.Semaphore(GROQ_CONCURRENCY)
 
-    # Preload the CrossEncoder model so the first request doesn't pay cold-start cost
-    logger.info("[startup] Preloading reranker model...")
+    # Preload the bi-encoder model so the first request doesn't pay cold-start cost
+    logger.info("[startup] Preloading bi-encoder reranker model (all-MiniLM-L6-v2)...")
     from app.services.rerank_service import _get_model
     _get_model()
 
@@ -613,7 +613,7 @@ async def search_stream(request: Request, query: str):
             # --- Stage 4: Extract ---
             yield _sse_event("stage", {
                 "stage": "extracting", "progress": 4, "total": 5,
-                "message": "Structured extraction via Gemini...",
+                "message": "Structured extraction via Groq (concurrent)...",
             })
 
             t3 = time.perf_counter()
